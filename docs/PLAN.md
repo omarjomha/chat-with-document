@@ -21,6 +21,10 @@ Checked against live OpenAI docs on 2026-10-05 (older tutorials describe a retir
 | SDP exchange (browser) | `POST https://api.openai.com/v1/realtime/calls`, `Content-Type: application/sdp` |
 
 - Model: `gpt-realtime-2.1` — **128k context window**, 32k max output.
+- Pricing: text input **$4.00/M uncached, $0.40/M cached** (audio $32.00/$0.40). Document text is
+  injected as *text* instructions, not audio, and is a static prefix that never changes within a
+  session — so it caches after the first turn. A 90k-token document costs roughly $0.36 on turn one
+  and ~$0.036 per turn after, which is what makes `MAX_CONTEXT_CHARS` of 360k defensible.
 - Mint body: `{ session: { type: "realtime", model, instructions, audio: { output: { voice } } } }`
 - Ephemeral key is at `response.value`.
 - Send `OpenAI-Safety-Identifier` on the mint request.
@@ -122,6 +126,14 @@ question about a specific detail by voice, get a correct spoken answer.
 via proxy; outcome documented honestly in the README either way.
 
 ## Stage 4 — Hardening, tests, README
+
+- **Abuse protection before going public.** Deployment Protection covers development,
+  but the spec requires an unauthenticated public URL for graders. Needs a per-IP rate limit on
+  `/api/realtime/token`, a same-origin check, and Deployment Protection switched off at submission.
+- **Session TTL in Blob.** `MemorySessionStore` expires entries after 2h; `BlobSessionStore` does
+  not, so deployed sessions accumulate indefinitely. Needs a TTL field honoured on read plus a
+  cleanup cron, or an explicit decision to accept the growth.
+
 
 - Poor-network resilience: ICE disconnect detection, reconnect with backoff, surfaced status
   (spec's review script tests this explicitly).
