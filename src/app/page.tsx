@@ -1,4 +1,4 @@
-import { VoiceChat } from "@/components/VoiceChat";
+import { DocumentChat } from "@/components/DocumentChat";
 
 export default function Home() {
   return (
@@ -8,17 +8,11 @@ export default function Home() {
           Talk to a Document
         </h1>
         <p className="text-sm text-slate-600 dark:text-slate-400">
-          Upload a PDF or paste a YouTube link, then ask questions out loud.
+          Upload a PDF, then ask questions out loud.
         </p>
       </header>
 
-      {/* Stage 2 replaces this with the real ingestion flow. */}
-      <div className="rounded-xl border border-dashed border-slate-300 px-4 py-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
-        Document ingestion arrives in the next stage. For now the assistant has no document loaded —
-        this screen verifies live voice end to end.
-      </div>
-
-      <VoiceChat />
+      <DocumentChat />
     </main>
   );
 }
