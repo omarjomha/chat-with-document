@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
+import type { DocumentContext } from "@/lib/prompt";
 import { mintClientSecret, RealtimeMintError } from "@/lib/realtime/mintClientSecret";
+import { getSessionStore } from "@/lib/store";
 
 // Node.js runtime on Fluid Compute. The Edge runtime is deprecated on Vercel,
 // and we need Node built-ins here anyway.
@@ -11,7 +13,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const requestSchema = z.object({
-  /** Set once ingestion lands in Stage 2; absent means "no document yet". */
+  /** Absent means no document has been ingested yet. */
   sessionId: z.string().uuid().optional(),
 });
 
@@ -29,8 +31,26 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  // Stage 2 resolves sessionId -> stored document text here.
-  const context = undefined;
+  const { sessionId } = parsed.data;
+
+  let context: DocumentContext | undefined;
+  if (sessionId) {
+    const session = await getSessionStore().get(sessionId);
+    if (!session) {
+      // Better to say so than to silently start an ungrounded conversation the
+      // user believes is about their document.
+      return Response.json(
+        { error: "That document session has expired. Please upload it again." },
+        { status: 404 },
+      );
+    }
+    context = {
+      title: session.title,
+      kind: session.kind,
+      text: session.text,
+      truncated: session.truncated,
+    };
+  }
 
   try {
     const secret = await mintClientSecret(context, randomUUID());

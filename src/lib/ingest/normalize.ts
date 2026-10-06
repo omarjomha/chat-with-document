@@ -24,7 +24,6 @@ export function cleanText(raw: string): string {
       // Normalise line endings first so later rules only deal with \n.
       .replace(/\r\n?/g, "\n")
       // Strip control characters except tab and newline.
-      // eslint-disable-next-line no-control-regex
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
       // PDF extraction often emits a soft hyphen at a line break; rejoin.
       .replace(/­\n/g, "")
