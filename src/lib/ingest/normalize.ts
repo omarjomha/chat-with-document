@@ -26,9 +26,9 @@ export function cleanText(raw: string): string {
       // Strip control characters except tab and newline.
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
       // PDF extraction often emits a soft hyphen at a line break; rejoin.
-      .replace(/­\n/g, "")
+      .replace(/\u00AD\n/g, "")
       // Collapse horizontal whitespace runs (column gutters, justified text).
-      .replace(/[ \t ]+/g, " ")
+      .replace(/[ \t\u00A0]+/g, " ")
       // Trim trailing spaces on each line.
       .replace(/ +\n/g, "\n")
       // Collapse 3+ blank lines down to a paragraph break.
