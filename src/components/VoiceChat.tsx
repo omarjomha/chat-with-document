@@ -57,8 +57,8 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
         </div>
       )}
 
-      {session.userSpeaking && (
-        <p className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Listening…</p>
+      {isLive && session.hasMicrophone && (
+        <MicStatus muted={session.muted} speaking={session.userSpeaking} />
       )}
 
       <TranscriptFeed
@@ -96,5 +96,43 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
         </button>
       )}
     </section>
+  );
+}
+
+/**
+ * Always-present microphone state line.
+ *
+ * Muting previously produced no affirmative feedback -- the UI simply stopped
+ * showing "Listening", which is indistinguishable from silence. Rendering a
+ * steady baseline state makes the mute transition visible.
+ */
+function MicStatus({ muted, speaking }: { muted: boolean; speaking: boolean }) {
+  const { label, dot, tone } = muted
+    ? {
+        label: "Muted — the assistant can't hear you",
+        dot: "bg-amber-500",
+        tone: "text-amber-700 dark:text-amber-400",
+      }
+    : speaking
+      ? {
+          label: "Listening…",
+          dot: "bg-emerald-500 animate-pulse",
+          tone: "text-emerald-700 dark:text-emerald-400",
+        }
+      : {
+          label: "Mic on",
+          dot: "bg-emerald-500",
+          tone: "text-slate-500 dark:text-slate-400",
+        };
+
+  return (
+    <p
+      className={`flex items-center gap-2 text-xs font-medium ${tone}`}
+      role="status"
+      aria-live="polite"
+    >
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} aria-hidden="true" />
+      {label}
+    </p>
   );
 }

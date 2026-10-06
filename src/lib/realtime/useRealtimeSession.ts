@@ -210,12 +210,12 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions = {}): Rea
   );
 
   const toggleMute = useCallback(() => {
-    setMuted((current) => {
-      const next = !current;
-      handleRef.current?.setMuted(next);
-      return next;
-    });
-  }, []);
+    // The track toggle is a side effect, so it must stay out of the state
+    // updater -- React may invoke an updater more than once.
+    const next = !muted;
+    handleRef.current?.setMuted(next);
+    setMuted(next);
+  }, [muted]);
 
   const sendText = useCallback((text: string) => {
     const trimmed = text.trim();
