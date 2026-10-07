@@ -37,7 +37,12 @@ export class BlobSessionStore implements SessionStore {
 
   async get(id: string): Promise<StoredSession | undefined> {
     try {
-      const result = await get(pathFor(id), { access: "private" });
+      // useCache defaults to true, which serves deleted or just-expired
+      // sessions from the CDN cache -- verified in production, where a token
+      // was still minted with the context of a session deleted moments
+      // earlier. Correctness wins over latency here: the payload is a few KB
+      // and is read once per session start.
+      const result = await get(pathFor(id), { access: "private", useCache: false });
       // A missing session is an expected outcome (expired, wrong id).
       // statusCode 304 carries no body; we never send conditional headers, so
       // it should not occur, but the type requires handling it.
