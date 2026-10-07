@@ -51,6 +51,11 @@ export async function mintClientSecret(
         type: "realtime",
         model: env.OPENAI_REALTIME_MODEL,
         instructions: buildInstructions(context),
+        // Lock output to audio. Left unset, a session can emit both
+        // response.output_text.delta and response.output_audio_transcript.delta
+        // for the same item, which would render the reply twice. Audio-only
+        // yields exactly one transcript stream, derived from the audio itself.
+        output_modalities: ["audio"],
         audio: {
           input: {
             // Enables user-side transcripts so the UI can show both halves of

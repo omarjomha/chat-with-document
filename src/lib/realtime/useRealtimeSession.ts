@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 import {
   connectRealtime,
@@ -21,6 +21,15 @@ export interface TranscriptTurn {
 export interface UseRealtimeSessionOptions {
   sessionId?: string;
   tokenEndpoint?: string;
+  /**
+   * The <audio> element the model's voice plays through, owned and rendered
+   * by the calling component.
+   *
+   * It must be in the document: browsers may delay or refuse playback for a
+   * detached media element, which showed up as the voice starting only after
+   * its transcript had finished printing.
+   */
+  audioRef: RefObject<HTMLAudioElement | null>;
 }
 
 export interface RealtimeSession {
@@ -47,8 +56,8 @@ const ACTIVE_STATES: ReadonlySet<ConnectionState> = new Set<ConnectionState>([
   "reconnecting",
 ]);
 
-export function useRealtimeSession(options: UseRealtimeSessionOptions = {}): RealtimeSession {
-  const { sessionId, tokenEndpoint = "/api/realtime/token" } = options;
+export function useRealtimeSession(options: UseRealtimeSessionOptions): RealtimeSession {
+  const { sessionId, tokenEndpoint = "/api/realtime/token", audioRef } = options;
 
   const [state, setState] = useState<ConnectionState>("idle");
   const [turns, setTurns] = useState<TranscriptTurn[]>([]);
@@ -59,21 +68,17 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions = {}): Rea
   const [modelSpeaking, setModelSpeaking] = useState(false);
 
   const handleRef = useRef<RealtimeSessionHandle | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const startingRef = useRef(false);
 
-  // One shared <audio> sink for the model voice, created lazily so this hook
-  // stays safe during server rendering.
-  const getAudioElement = useCallback((): HTMLAudioElement => {
-    if (!audioRef.current) {
-      const element = document.createElement("audio");
-      element.autoplay = true;
-      // Keeps iOS from routing to the earpiece and from pausing on silence.
-      element.setAttribute("playsinline", "true");
-      audioRef.current = element;
-    }
-    return audioRef.current;
-  }, []);
+  /*
+   * The <audio> sink is rendered by the consuming component and attached here
+   * by ref, rather than created with document.createElement.
+   *
+   * A detached media element is unreliable: browsers may delay or refuse
+   * playback for an element that is not in the document, which showed up as
+   * the model's voice starting only after its transcript had finished
+   * printing. Keeping it in the tree fixes that.
+   */
 
   const upsertTurn = useCallback(
     (
@@ -182,11 +187,19 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions = {}): Rea
       setError(undefined);
       setTurns([]);
 
+      const audioElement = audioRef.current;
+      if (!audioElement) {
+        setState("error");
+        setError("Audio output is not ready yet. Try again in a moment.");
+        startingRef.current = false;
+        return;
+      }
+
       try {
         const handle = await connectRealtime({
           tokenEndpoint,
           sessionId,
-          audioElement: getAudioElement(),
+          audioElement,
           useMicrophone,
           onEvent: handleEvent,
           onStateChange: setState,
@@ -206,7 +219,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions = {}): Rea
         startingRef.current = false;
       }
     },
-    [getAudioElement, handleEvent, sessionId, state, tokenEndpoint],
+    [audioRef, handleEvent, sessionId, state, tokenEndpoint],
   );
 
   const toggleMute = useCallback(() => {

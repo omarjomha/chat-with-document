@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { useRealtimeSession } from "@/lib/realtime/useRealtimeSession";
 
@@ -15,7 +15,9 @@ interface VoiceChatProps {
 }
 
 export function VoiceChat({ sessionId }: VoiceChatProps) {
-  const session = useRealtimeSession({ sessionId });
+  // This component owns the audio sink; the hook only needs a handle to it.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const session = useRealtimeSession({ sessionId, audioRef });
   const [textMode, setTextMode] = useState(false);
 
   const isLive = session.state === "live" || session.state === "reconnecting";
@@ -35,6 +37,15 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
 
   return (
     <section className="flex flex-col gap-4">
+      {/*
+        The model's voice plays through this element. It must live in the
+        document -- a detached media element can have its playback delayed or
+        refused, which showed up as the voice starting only after the
+        transcript had finished printing. `playsInline` keeps iOS from taking
+        over the screen or routing to the earpiece.
+      */}
+      <audio ref={audioRef} autoPlay playsInline />
+
       <header className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Conversation</h2>
         <ConnectionStatus state={session.state} />
