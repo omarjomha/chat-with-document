@@ -76,6 +76,20 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
   // Lets the pacing timer read the latest turns without being torn down and
   // rebuilt on every transcript delta.
   const turnsRef = useRef<TranscriptTurn[]>([]);
+  // Mirrors the cursors so the seal logic can stay dependency-free. Without
+  // this, handleEvent would be rebuilt on every 50ms tick while the live data
+  // channel kept calling the version captured at connect time.
+  const revealRef = useRef<Record<string, number>>({});
+  /*
+   * Turns that were cut short and must never be written to again.
+   *
+   * response.cancel is asynchronous: deltas already in flight keep arriving
+   * after it, and a late response.output_audio_transcript.done carries the
+   * FULL transcript. Without sealing, an interrupted reply kept growing and
+   * then snapped back to its untruncated text -- long after newer messages had
+   * been added below it.
+   */
+  const sealedRef = useRef<Set<string>>(new Set());
 
   /*
    * The <audio> sink is rendered by the consuming component and attached here
@@ -104,6 +118,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
       previousItemId: string | undefined,
       initialText: string,
     ) => {
+      if (sealedRef.current.has(id)) return;
       setTurns((current) => orderTurns(current, { id, role, previousItemId, initialText }));
     },
     [],
@@ -116,6 +131,9 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
       mutate: (previous: string) => string,
       status: TranscriptTurn["status"],
     ) => {
+      // An interrupted turn is finished. Later deltas and the late `done` event
+      // (which carries the full, untruncated transcript) must be dropped.
+      if (sealedRef.current.has(id)) return;
       setTurns((current) => {
         const index = current.findIndex((turn) => turn.id === id);
         // Normally the slot already exists, reserved by conversation.item.added.
@@ -131,13 +149,54 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     [],
   );
 
+  /**
+   * Cuts every still-speaking assistant turn down to what was actually heard.
+   *
+   * Targets turns whose reveal cursor has not caught up, rather than turns that
+   * are merely "not final": response.done marks a turn final when generation
+   * ends, which is well before the voice stops, so status alone would miss a
+   * reply that is still being spoken.
+   */
+  const sealUnspokenAssistantTurns = useCallback(() => {
+    const cursors = revealRef.current;
+    const targets = turnsRef.current.filter(
+      (turn) =>
+        turn.role === "assistant" &&
+        !sealedRef.current.has(turn.id) &&
+        (cursors[turn.id] ?? 0) < turn.text.length,
+    );
+    if (targets.length === 0) return;
+
+    const spokenById = new Map(
+      targets.map((turn) => [turn.id, revealedText(turn.text, cursors[turn.id] ?? 0)] as const),
+    );
+    // Mutated outside the updaters below, which must stay pure.
+    for (const turn of targets) sealedRef.current.add(turn.id);
+
+    setTurns((current) =>
+      current.map((turn) => {
+        const spoken = spokenById.get(turn.id);
+        return spoken === undefined ? turn : { ...turn, text: spoken, status: "final" as const };
+      }),
+    );
+    // Pin each cursor to its trimmed length so the pacing timer sees no work.
+    setReveal((current) => {
+      const next = { ...current };
+      for (const [id, spoken] of spokenById) next[id] = spoken.length;
+      return next;
+    });
+  }, []);
+
   const handleEvent = useCallback(
     (event: RealtimeServerEvent) => {
       switch (event.type) {
         case "input_audio_buffer.speech_started":
           setUserSpeaking(true);
-          // Barge-in: the model yields the floor immediately.
+          // Barge-in: the model yields the floor immediately. Server VAD cancels
+          // its response, so trim whatever it had not yet said. This is the
+          // common way to interrupt -- far more so than the button.
           setModelSpeaking(false);
+          sealUnspokenAssistantTurns();
           break;
 
         case "input_audio_buffer.speech_stopped":
@@ -228,12 +287,16 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
           break;
       }
     },
-    [reserveTurn, upsertTurn],
+    [reserveTurn, sealUnspokenAssistantTurns, upsertTurn],
   );
 
   useEffect(() => {
     turnsRef.current = turns;
   }, [turns]);
+
+  useEffect(() => {
+    revealRef.current = reveal;
+  }, [reveal]);
 
   const pendingReveal = hasPendingReveal(turns, reveal);
 
@@ -285,6 +348,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
       setError(undefined);
       setTurns([]);
       setReveal({});
+      sealedRef.current = new Set();
 
       const audioElement = audioRef.current;
       if (!audioElement) {
@@ -343,18 +407,8 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
   const interrupt = useCallback(() => {
     handleRef.current?.send({ type: "response.cancel" });
     setModelSpeaking(false);
-
-    // Audio stops immediately, so anything not yet revealed was never spoken.
-    // Trim the turn to what the user actually heard rather than leaving text on
-    // screen that no voice ever said.
-    setTurns((current) =>
-      current.map((turn) => {
-        if (turn.role !== "assistant" || turn.status === "final") return turn;
-        const spoken = revealedText(turn.text, reveal[turn.id] ?? 0);
-        return { ...turn, text: spoken, status: "final" };
-      }),
-    );
-  }, [reveal]);
+    sealUnspokenAssistantTurns();
+  }, [sealUnspokenAssistantTurns]);
 
   // Tear the peer connection down if the component unmounts mid-session.
   useEffect(() => stop, [stop]);

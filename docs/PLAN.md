@@ -127,6 +127,13 @@ via proxy; outcome documented honestly in the README either way.
 
 ## Stage 4 — Hardening, tests, README
 
+- **Tune the transcript reveal rate.** With `SPEECH_CHARS_PER_SECOND = 18` the voice still trails
+  the text somewhat. Unknown whether the drift accumulates over a long answer or is a constant
+  offset — measure that first, since the fix differs: a constant offset means lowering the rate, while
+  accumulating drift means the rate itself is wrong and may need deriving from audio rather than a
+  constant. Observed 2026-10-07.
+
+
 - **Abuse protection before going public.** Deployment Protection covers development,
   but the spec requires an unauthenticated public URL for graders. Needs a per-IP rate limit on
   `/api/realtime/token`, a same-origin check, and Deployment Protection switched off at submission.
