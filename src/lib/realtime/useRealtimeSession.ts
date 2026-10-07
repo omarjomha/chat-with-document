@@ -9,6 +9,7 @@ import {
   type RealtimeSessionHandle,
 } from "./client";
 import { textMessageEvent, type RealtimeServerEvent } from "./events";
+import { advanceReveal, hasPendingReveal, revealedText } from "./reveal";
 import { orderTurns, type TurnSlot } from "./turnOrder";
 
 /** A transcript turn. `streaming` turns render with a live caret. */
@@ -45,6 +46,9 @@ export interface RealtimeSession {
   clearError(): void;
 }
 
+/** 50ms is ~0.9 characters at the default rate: smooth without busy-looping. */
+const REVEAL_TICK_MS = 50;
+
 const ACTIVE_STATES: ReadonlySet<ConnectionState> = new Set<ConnectionState>([
   "requesting-mic",
   "connecting",
@@ -65,6 +69,13 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
 
   const handleRef = useRef<RealtimeSessionHandle | null>(null);
   const startingRef = useRef(false);
+
+  // Per-turn reveal cursor, in characters. Fractional so slow rates still
+  // accumulate across short ticks.
+  const [reveal, setReveal] = useState<Record<string, number>>({});
+  // Lets the pacing timer read the latest turns without being torn down and
+  // rebuilt on every transcript delta.
+  const turnsRef = useRef<TranscriptTurn[]>([]);
 
   /*
    * The <audio> sink is rendered by the consuming component and attached here
@@ -220,6 +231,46 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     [reserveTurn, upsertTurn],
   );
 
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
+
+  const pendingReveal = hasPendingReveal(turns, reveal);
+
+  /*
+   * Advances the reveal cursors while any assistant text is still outstanding.
+   * The timer only runs when there is something to reveal, so an idle session
+   * carries no recurring work.
+   */
+  useEffect(() => {
+    if (!pendingReveal) return;
+
+    let previous = performance.now();
+    const timer = setInterval(() => {
+      const now = performance.now();
+      const elapsed = now - previous;
+      previous = now;
+
+      setReveal((current) => {
+        let changed = false;
+        const next = { ...current };
+
+        for (const turn of turnsRef.current) {
+          if (turn.role !== "assistant") continue;
+          const advanced = advanceReveal(current[turn.id] ?? 0, turn.text.length, elapsed);
+          if (advanced !== (current[turn.id] ?? 0)) {
+            next[turn.id] = advanced;
+            changed = true;
+          }
+        }
+
+        return changed ? next : current;
+      });
+    }, REVEAL_TICK_MS);
+
+    return () => clearInterval(timer);
+  }, [pendingReveal]);
+
   const stop = useCallback(() => {
     handleRef.current?.close();
     handleRef.current = null;
@@ -233,6 +284,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
       startingRef.current = true;
       setError(undefined);
       setTurns([]);
+      setReveal({});
 
       const audioElement = audioRef.current;
       if (!audioElement) {
@@ -291,19 +343,52 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
   const interrupt = useCallback(() => {
     handleRef.current?.send({ type: "response.cancel" });
     setModelSpeaking(false);
-  }, []);
+
+    // Audio stops immediately, so anything not yet revealed was never spoken.
+    // Trim the turn to what the user actually heard rather than leaving text on
+    // screen that no voice ever said.
+    setTurns((current) =>
+      current.map((turn) => {
+        if (turn.role !== "assistant" || turn.status === "final") return turn;
+        const spoken = revealedText(turn.text, reveal[turn.id] ?? 0);
+        return { ...turn, text: spoken, status: "final" };
+      }),
+    );
+  }, [reveal]);
 
   // Tear the peer connection down if the component unmounts mid-session.
   useEffect(() => stop, [stop]);
 
+  /*
+   * Assistant turns are surfaced sliced to their reveal cursor so the text
+   * tracks the voice. The unsliced text stays in state as the source of truth,
+   * and a turn still streaming visually is reported as such even once its text
+   * has fully arrived.
+   */
+  const pacedTurns = turns.map((turn) => {
+    if (turn.role !== "assistant") return turn;
+    const cursor = reveal[turn.id] ?? 0;
+    const shown = revealedText(turn.text, cursor);
+    const caughtUp = cursor >= turn.text.length;
+    return { ...turn, text: shown, status: caughtUp ? turn.status : "streaming" };
+  });
+
   return {
     state,
-    turns,
+    turns: pacedTurns,
     error,
     muted,
     hasMicrophone,
     userSpeaking,
-    modelSpeaking,
+    /*
+     * Outstanding reveal counts as still speaking.
+     *
+     * response.done fires when generation finishes, which is well before the
+     * voice stops. Using it alone hid the interrupt control while the model was
+     * still audibly talking. The reveal cursor tracks the speech, so it is the
+     * better signal for whether there is anything left to interrupt.
+     */
+    modelSpeaking: modelSpeaking || pendingReveal,
     start,
     stop,
     toggleMute,
