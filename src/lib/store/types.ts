@@ -14,6 +14,8 @@ export interface StoredSession {
   /** PDF page count, or undefined for YouTube. */
   pages?: number;
   createdAt: number;
+  /** Epoch ms after which this session must not be served. */
+  expiresAt: number;
 }
 
 /**
@@ -31,6 +33,9 @@ export interface StoredSession {
  */
 export interface SessionStore {
   save(session: StoredSession): Promise<void>;
+  /** Must return undefined for an expired session, whether or not it is gone. */
   get(id: string): Promise<StoredSession | undefined>;
   delete(id: string): Promise<void>;
+  /** Physically removes lapsed sessions. Returns how many were removed. */
+  deleteExpired(): Promise<number>;
 }

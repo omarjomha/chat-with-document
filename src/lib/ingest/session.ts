@@ -2,6 +2,7 @@ import "server-only";
 
 import { randomUUID } from "node:crypto";
 
+import { SESSION_TTL_MS } from "@/lib/constants";
 import type { DocumentKind } from "@/lib/prompt";
 import { getSessionStore } from "@/lib/store";
 import type { StoredSession } from "@/lib/store/types";
@@ -35,6 +36,7 @@ export async function createSession(input: {
   pages?: number;
 }): Promise<IngestResult> {
   const normalized = normalizeExtractedText(input.rawText);
+  const now = Date.now();
 
   const session: StoredSession = {
     id: randomUUID(),
@@ -46,10 +48,23 @@ export async function createSession(input: {
     usedChars: normalized.usedChars,
     approxTokens: normalized.approxTokens,
     pages: input.pages,
-    createdAt: Date.now(),
+    createdAt: now,
+    expiresAt: now + SESSION_TTL_MS,
   };
 
-  await getSessionStore().save(session);
+  const store = getSessionStore();
+  await store.save(session);
+
+  // Opportunistic sweep. The Hobby plan caps cron at once per day, so relying
+  // on the scheduled job alone would leave lapsed documents on disk for up to
+  // 24h. Sweeping on write keeps the store clean whenever the app is in use.
+  // Failure here must never fail the ingestion the user is waiting on.
+  try {
+    const removed = await store.deleteExpired();
+    if (removed > 0) console.info(`[ingest] swept ${removed} expired session(s)`);
+  } catch (error) {
+    console.warn("[ingest] expired-session sweep failed", error);
+  }
 
   return {
     sessionId: session.id,

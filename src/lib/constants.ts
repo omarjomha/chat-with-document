@@ -15,3 +15,12 @@ export const MAX_CONTEXT_CHARS = 360_000;
 
 /** Rough chars-per-token ratio used only for user-facing estimates. */
 export const APPROX_CHARS_PER_TOKEN = 4;
+
+/**
+ * How long an ingested document stays usable.
+ *
+ * Checked on read, so an expired session is unusable the moment it lapses --
+ * independent of when its file is physically removed. Vercel Blob has no TTL
+ * or lifecycle feature, so deletion is entirely our responsibility.
+ */
+export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;

@@ -1,6 +1,8 @@
 import "server-only";
 
-import { del, get, put } from "@vercel/blob";
+import { del, get, list, put } from "@vercel/blob";
+
+import { SESSION_TTL_MS } from "@/lib/constants";
 
 import type { SessionStore, StoredSession } from "./types";
 
@@ -15,6 +17,11 @@ function pathFor(id: string): string {
  *
  * Blobs are private, so the extracted document text is never reachable by URL
  * -- only this server can read it, using the store credentials.
+ *
+ * Vercel Blob has no TTL or lifecycle feature, so expiry is enforced here:
+ * `get` refuses a lapsed session regardless of whether its file still exists,
+ * which means stale document text can never reach the model even if physical
+ * cleanup has not yet run.
  */
 export class BlobSessionStore implements SessionStore {
   async save(session: StoredSession): Promise<void> {
@@ -35,8 +42,16 @@ export class BlobSessionStore implements SessionStore {
       // statusCode 304 carries no body; we never send conditional headers, so
       // it should not occur, but the type requires handling it.
       if (!result || result.statusCode !== 200) return undefined;
-      const raw = await new Response(result.stream).text();
-      return JSON.parse(raw) as StoredSession;
+
+      const session = JSON.parse(await new Response(result.stream).text()) as StoredSession;
+
+      if (session.expiresAt <= Date.now()) {
+        // Lapsed but not yet swept. Remove it now and report it as gone.
+        await this.delete(id);
+        return undefined;
+      }
+
+      return session;
     } catch (error) {
       if (isNotFound(error)) return undefined;
       throw error;
@@ -49,6 +64,28 @@ export class BlobSessionStore implements SessionStore {
     } catch (error) {
       if (!isNotFound(error)) throw error;
     }
+  }
+
+  /**
+   * Sweeps lapsed sessions using each blob's uploadedAt, which `list` returns
+   * as metadata. Deciding from metadata avoids downloading every session just
+   * to read its expiry.
+   */
+  async deleteExpired(): Promise<number> {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    const stale: string[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const page = await list({ prefix: `${PREFIX}/`, cursor, limit: 1000 });
+      for (const blob of page.blobs) {
+        if (new Date(blob.uploadedAt).getTime() <= cutoff) stale.push(blob.pathname);
+      }
+      cursor = page.hasMore ? page.cursor : undefined;
+    } while (cursor);
+
+    if (stale.length > 0) await del(stale);
+    return stale.length;
   }
 }
 
