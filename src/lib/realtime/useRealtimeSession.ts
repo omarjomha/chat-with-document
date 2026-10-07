@@ -9,14 +9,10 @@ import {
   type RealtimeSessionHandle,
 } from "./client";
 import { textMessageEvent, type RealtimeServerEvent } from "./events";
+import { orderTurns, type TurnSlot } from "./turnOrder";
 
-export interface TranscriptTurn {
-  id: string;
-  role: "user" | "assistant";
-  text: string;
-  /** `streaming` turns render with a live caret. */
-  status: "streaming" | "final";
-}
+/** A transcript turn. `streaming` turns render with a live caret. */
+export type TranscriptTurn = TurnSlot;
 
 export interface UseRealtimeSessionOptions {
   sessionId?: string;
@@ -80,6 +76,28 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
    * printing. Keeping it in the tree fixes that.
    */
 
+  /**
+   * Reserves a turn's position in the transcript the moment the conversation
+   * item is announced, before any of its text exists.
+   *
+   * Ordering cannot be derived from when text arrives. Whisper transcribes the
+   * user's speech asynchronously, so a question's transcript routinely lands
+   * after the answer has begun streaming -- which rendered replies above the
+   * questions that prompted them. `previous_item_id` is the server's own
+   * ordering, so honour it when the anchor is known and fall back to appending.
+   */
+  const reserveTurn = useCallback(
+    (
+      id: string,
+      role: TranscriptTurn["role"],
+      previousItemId: string | undefined,
+      initialText: string,
+    ) => {
+      setTurns((current) => orderTurns(current, { id, role, previousItemId, initialText }));
+    },
+    [],
+  );
+
   const upsertTurn = useCallback(
     (
       id: string,
@@ -89,6 +107,8 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     ) => {
       setTurns((current) => {
         const index = current.findIndex((turn) => turn.id === id);
+        // Normally the slot already exists, reserved by conversation.item.added.
+        // Appending is a fallback for an item we were never told about.
         if (index === -1) {
           return [...current, { id, role, text: mutate(""), status }];
         }
@@ -112,6 +132,33 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
         case "input_audio_buffer.speech_stopped":
           setUserSpeaking(false);
           break;
+
+        case "conversation.item.added": {
+          const { item, previous_item_id: previousItemId } = event as {
+            item: {
+              id: string;
+              type: string;
+              role?: string;
+              content?: Array<{ type: string; text?: string; transcript?: string | null }>;
+            };
+            previous_item_id?: string | null;
+          };
+
+          // Ignore non-message items such as tool calls.
+          if (item.type !== "message") break;
+          if (item.role !== "user" && item.role !== "assistant") break;
+
+          // A typed message arrives with its text already present; spoken audio
+          // arrives empty and is filled in by transcription events later.
+          const initialText =
+            item.content
+              ?.map((part) => part.text ?? part.transcript ?? "")
+              .join("")
+              .trim() ?? "";
+
+          reserveTurn(item.id, item.role, previousItemId ?? undefined, initialText);
+          break;
+        }
 
         case "conversation.item.input_audio_transcription.delta": {
           const { item_id: itemId, delta } = event as { item_id: string; delta: string };
@@ -170,7 +217,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
           break;
       }
     },
-    [upsertTurn],
+    [reserveTurn, upsertTurn],
   );
 
   const stop = useCallback(() => {
@@ -233,13 +280,9 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
   const sendText = useCallback((text: string) => {
     const trimmed = text.trim();
     if (!trimmed || !handleRef.current) return;
-    // Render the typed message immediately; the server emits no transcription
-    // event for text input.
-    const localId = `local-${Date.now()}`;
-    setTurns((current) => [
-      ...current,
-      { id: localId, role: "user", text: trimmed, status: "final" },
-    ]);
+    // No optimistic turn here. The server echoes the item back via
+    // conversation.item.added with its real id and text, and adding our own
+    // would render the message twice under two different ids.
     for (const event of textMessageEvent(trimmed)) {
       handleRef.current.send(event);
     }

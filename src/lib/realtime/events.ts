@@ -16,6 +16,23 @@ export type RealtimeServerEvent =
   | { type: "session.updated" }
   | { type: "input_audio_buffer.speech_started" }
   | { type: "input_audio_buffer.speech_stopped" }
+  /**
+   * Emitted whenever an item joins the conversation: for the user when the
+   * input audio buffer is committed, and for the assistant when a response
+   * begins. This is the only reliable source of conversation ordering --
+   * Whisper transcription of user speech resolves asynchronously and often
+   * lands after the assistant has already started replying.
+   */
+  | {
+      type: "conversation.item.added";
+      previous_item_id?: string | null;
+      item: {
+        id: string;
+        type: string;
+        role?: string;
+        content?: Array<{ type: string; text?: string; transcript?: string | null }>;
+      };
+    }
   | {
       type: "conversation.item.input_audio_transcription.delta";
       item_id: string;

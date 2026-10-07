@@ -12,12 +12,17 @@ interface TranscriptFeedProps {
 export function TranscriptFeed({ turns, emptyHint }: TranscriptFeedProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
+  // Turns are reserved in conversation order the moment an item is announced,
+  // which is before its text exists. Hide the empty ones so a placeholder
+  // bubble never appears, while their position is still held in the array.
+  const visible = turns.filter((turn) => turn.text.trim().length > 0);
+
   // Keep the newest turn in view as text streams in.
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns]);
 
-  if (turns.length === 0) {
+  if (visible.length === 0) {
     return (
       <div className="flex min-h-40 items-center justify-center rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
         {emptyHint}
@@ -32,7 +37,7 @@ export function TranscriptFeed({ turns, emptyHint }: TranscriptFeedProps) {
       aria-live="polite"
       aria-label="Conversation transcript"
     >
-      {turns.map((turn) => (
+      {visible.map((turn) => (
         <TurnBubble key={turn.id} turn={turn} />
       ))}
       <div ref={endRef} />
