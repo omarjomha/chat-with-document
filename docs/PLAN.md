@@ -130,9 +130,8 @@ via proxy; outcome documented honestly in the README either way.
 - **Abuse protection before going public.** Deployment Protection covers development,
   but the spec requires an unauthenticated public URL for graders. Needs a per-IP rate limit on
   `/api/realtime/token`, a same-origin check, and Deployment Protection switched off at submission.
-- **Session TTL in Blob.** `MemorySessionStore` expires entries after 2h; `BlobSessionStore` does
-  not, so deployed sessions accumulate indefinitely. Needs a TTL field honoured on read plus a
-  cleanup cron, or an explicit decision to accept the growth.
+- ~~Session TTL in Blob.~~ **Done** (implemented alongside Stage 2): 2h expiry checked on read,
+  swept on ingest, deleted explicitly on Replace/pagehide, with a daily cron backstop.
 
 
 - Poor-network resilience: ICE disconnect detection, reconnect with backoff, surfaced status
