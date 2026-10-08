@@ -125,6 +125,13 @@ question about a specific detail by voice, get a correct spoken answer.
 **Exit criteria:** works locally for certain (spec accepts a local demo). Deployed path attempted
 via proxy; outcome documented honestly in the README either way.
 
+**Status: extraction confirmed working live on 2026-10-08**, via `npm run verify:youtube` on a
+laptop tethered to a phone hotspot, exercising the shipped `fetchYouTubeTranscript`. The same check
+from the development machine was refused at the same moment: that machine's IP had been blocked by
+YouTube after heavy probing while this was being built, and the block is per-connection, so it is a
+demo constraint rather than a code one. Still outstanding: one run of the *whole* flow — ingest a
+video then hold the voice conversation about it — on an unblocked connection.
+
 **Outcome (2026-10-07).** Works, server-side, with no API key and no browser — but only via the
 **Android InnerTube client**. YouTube gates the web client's caption URLs behind a BotGuard
 Proof-of-Origin token and marks them `exp=xpe`; fetching one returns `200` with an empty body, a

@@ -126,6 +126,13 @@ first line, and asserts that no markup or HTML entity survived into the text.
 If it reports `blocked`, that is YouTube refusing your network, not a defect — retry from another
 connection, since a phone hotspot is usually enough.
 
+**Last confirmed working: 2026-10-08**, from a laptop on a phone hotspot. The same check from the
+development machine's home connection was refused at the same time, which is the clearest statement
+of what this limitation actually is: per-connection IP reputation, not a defect and not a
+per-machine problem. Devices behind one router share a public IP, so a second machine on the same
+wifi is refused too — and IPv6 on that connection was refused as well, whole delegated prefix,
+which rules out NAT as the explanation.
+
 ### What did not work
 
 Recorded so nobody re-walks it. All measured 2026-10-07 from a residential connection:
