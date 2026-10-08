@@ -14,6 +14,39 @@ npm run dev
 Open http://localhost:3000. Voice needs microphone permission, which browsers only grant over
 HTTPS or on `localhost`.
 
+### Testing on a phone
+
+The spec targets ~390px and reviewers test on a phone, so this is worth setting up properly. Two
+things make it fiddly, and they have one shared answer.
+
+**Microphone access needs a secure context.** Browsers grant `getUserMedia` only over HTTPS or on
+`localhost`, so `http://<laptop-ip>:3000` gives a page where the mic silently refuses and only the
+text fallback works. Hence:
+
+```bash
+npm run dev:https      # self-signed cert, generated on first run
+```
+
+**YouTube ingestion needs an unblocked egress** (see the YouTube section). Both are satisfied by one
+arrangement:
+
+1. Turn on the phone's hotspot and connect the **laptop** to it.
+2. Leave the phone on its own hotspot network.
+3. Run `npm run dev:https` on the laptop.
+4. Find the laptop's address on that network — `ipconfig` on Windows, or
+   `ipconfig getifaddr en0` / `ifconfig | grep "inet "` on macOS.
+5. On the phone, open `https://<that-address>:3000` and accept the certificate warning.
+
+The laptop's traffic then exits over cellular, which YouTube has not flagged, while the phone
+reaches the laptop over the hotspot LAN. Allow the inbound connection if the firewall prompts.
+
+**If the mic is still refused after accepting the warning** — iOS Safari is strict about
+self-signed certificates — either trust the generated CA on the phone (it is written to the
+`certificates/` directory, and on iOS is installed under Settings → General → VPN & Device
+Management, then enabled under Settings → General → About → Certificate Trust Settings), or put a
+tunnel in front of the dev server for a genuinely trusted certificate. A tunnel only affects
+inbound traffic, so YouTube ingestion keeps working over cellular either way.
+
 ### Environment
 
 | Variable                | Required | Notes                                                                                                                                                |
