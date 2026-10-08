@@ -35,8 +35,19 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
     await session.start(false);
   }
 
+  /*
+   * Any tap retries playback that the browser refused. The client tells the
+   * user to "tap the page" when autoplay is blocked -- most often after a
+   * reconnect, which attaches a new stream outside any user gesture -- and this
+   * is what makes that instruction true.
+   */
+  function resumeAudio() {
+    const audio = audioRef.current;
+    if (audio?.srcObject && audio.paused) void audio.play().catch(() => {});
+  }
+
   return (
-    <section className="flex flex-col gap-4">
+    <section className="flex flex-col gap-4" onPointerDown={resumeAudio}>
       {/*
         The model's voice plays through this element. It must live in the
         document -- a detached media element can have its playback delayed or
@@ -68,6 +79,15 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
         </div>
       )}
 
+      {session.state === "reconnecting" && (
+        <p
+          role="status"
+          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+        >
+          Connection dropped. Reconnecting — the conversation will pick up where it left off.
+        </p>
+      )}
+
       {isLive && session.hasMicrophone && (
         <MicStatus muted={session.muted} speaking={session.userSpeaking} />
       )}
@@ -83,7 +103,10 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
         }
       />
 
-      {showTextInput && <TextChatInput disabled={!isLive} onSend={session.sendText} />}
+      {/* Disabled while reconnecting: there is no channel to send on. */}
+      {showTextInput && (
+        <TextChatInput disabled={session.state !== "live"} onSend={session.sendText} />
+      )}
 
       <SessionControls
         state={session.state}

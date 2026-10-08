@@ -4,11 +4,14 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 
 import {
   connectRealtime,
+  isRetryableConnectError,
   MicrophoneUnavailableError,
+  requestMicrophone,
   type ConnectionState,
   type RealtimeSessionHandle,
 } from "./client";
 import { textMessageEvent, type RealtimeServerEvent } from "./events";
+import { historyReplayEvents, reconnectDelay } from "./reconnect";
 import { advanceReveal, hasPendingReveal, revealedText } from "./reveal";
 import { orderTurns, type TurnSlot } from "./turnOrder";
 
@@ -69,6 +72,16 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
 
   const handleRef = useRef<RealtimeSessionHandle | null>(null);
   const startingRef = useRef(false);
+  // Outlives individual connections, so a rebuild reuses it without a prompt.
+  const micRef = useRef<MediaStream | undefined>(undefined);
+  /*
+   * Bumped by start and stop. A reconnect that was scheduled, or a connection
+   * that resolved, under an older generation belongs to a session the user
+   * has since ended and must not touch state.
+   */
+  const generationRef = useRef(0);
+  // Cancels a pending reconnect: its timer, or its wait for the network.
+  const cancelRetryRef = useRef<(() => void) | undefined>(undefined);
 
   // Per-turn reveal cursor, in characters. Fractional so slow rates still
   // accumulate across short ticks.
@@ -334,62 +347,197 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     return () => clearInterval(timer);
   }, [pendingReveal]);
 
+  const releaseMicrophone = useCallback(() => {
+    micRef.current?.getTracks().forEach((track) => track.stop());
+    micRef.current = undefined;
+  }, []);
+
+  const cancelPendingRetry = useCallback(() => {
+    cancelRetryRef.current?.();
+    cancelRetryRef.current = undefined;
+  }, []);
+
   const stop = useCallback(() => {
+    generationRef.current += 1;
+    cancelPendingRetry();
     handleRef.current?.close();
+    handleRef.current = null;
+    releaseMicrophone();
+    setModelSpeaking(false);
+    setUserSpeaking(false);
+    // An error stays on screen until the user starts again; it explains itself.
+    setState((current) => (current === "idle" || current === "error" ? current : "closed"));
+  }, [cancelPendingRetry, releaseMicrophone]);
+
+  // Rebuild attempts since the session was last live. Reset only on reaching
+  // live, so a network where ICE never completes still runs out of attempts.
+  const attemptRef = useRef(0);
+  // Indirection so a connection can report its loss to the newest handler.
+  const lostRef = useRef<() => void>(() => {});
+
+  /** Opens one connection for the current session. Shared by start and every rebuild. */
+  const openConnection = useCallback(
+    async (generation: number, rebuilding: boolean) => {
+      const audioElement = audioRef.current;
+      if (!audioElement) throw new Error("Audio output is not ready yet. Try again in a moment.");
+
+      const current = () => generationRef.current === generation;
+      const handle = await connectRealtime({
+        tokenEndpoint,
+        sessionId,
+        audioElement,
+        microphone: micRef.current,
+        onEvent: (event) => {
+          if (current()) handleEvent(event);
+        },
+        onStateChange: (next) => {
+          if (!current()) return;
+          if (next === "live") attemptRef.current = 0;
+          // To the user a rebuild is one continuous "Reconnecting", not a fresh start.
+          setState(rebuilding && next === "connecting" ? "reconnecting" : next);
+        },
+        onError: (message) => {
+          if (current()) setError(message);
+        },
+        onConnectionLost: () => {
+          if (current()) lostRef.current();
+        },
+      });
+
+      if (!current()) {
+        // The user stopped while this was negotiating.
+        handle.close();
+        return;
+      }
+      handleRef.current = handle;
+
+      // The new session knows the document, from its instructions, but not the
+      // conversation. Queued until the data channel opens.
+      if (rebuilding) {
+        for (const event of historyReplayEvents(turnsRef.current)) handle.send(event);
+      }
+    },
+    [audioRef, handleEvent, sessionId, tokenEndpoint],
+  );
+
+  const fail = useCallback(
+    (caught: unknown) => {
+      releaseMicrophone();
+      setState("error");
+      if (caught instanceof MicrophoneUnavailableError) {
+        setError(micErrorMessage(caught.reason));
+      } else {
+        setError(caught instanceof Error ? caught.message : "Could not start the session.");
+      }
+    },
+    [releaseMicrophone],
+  );
+
+  /**
+   * The connection dropped and did not heal by itself. Rebuild it with
+   * backoff, holding off entirely while the browser reports being offline,
+   * since an attempt then would fail instantly and waste one of the few.
+   */
+  const handleConnectionLost = useCallback(() => {
+    const generation = generationRef.current;
     handleRef.current = null;
     setModelSpeaking(false);
     setUserSpeaking(false);
-  }, []);
+    // The voice stopped mid-reply, so the transcript keeps only what was heard,
+    // and nothing still streaming is going to finish.
+    sealUnspokenAssistantTurns();
+    setTurns((current) =>
+      current.map((turn) => (turn.status === "streaming" ? { ...turn, status: "final" } : turn)),
+    );
+
+    const attempt = async () => {
+      cancelRetryRef.current = undefined;
+      if (generationRef.current !== generation) return;
+      attemptRef.current += 1;
+      try {
+        await openConnection(generation, true);
+      } catch (caught) {
+        if (generationRef.current !== generation) return;
+        if (isRetryableConnectError(caught)) schedule();
+        else fail(caught);
+      }
+    };
+
+    const schedule = () => {
+      const delay = reconnectDelay(attemptRef.current);
+      if (delay === undefined) {
+        fail(
+          new Error(
+            "The connection was lost and could not be restored. Check your network, then start a new session.",
+          ),
+        );
+        return;
+      }
+      setState("reconnecting");
+
+      if (navigator.onLine === false) {
+        const onOnline = () => {
+          window.removeEventListener("online", onOnline);
+          void attempt();
+        };
+        window.addEventListener("online", onOnline);
+        cancelRetryRef.current = () => window.removeEventListener("online", onOnline);
+        return;
+      }
+
+      const timer = setTimeout(() => void attempt(), delay);
+      cancelRetryRef.current = () => clearTimeout(timer);
+    };
+
+    schedule();
+  }, [fail, openConnection, sealUnspokenAssistantTurns]);
+
+  useEffect(() => {
+    lostRef.current = handleConnectionLost;
+  }, [handleConnectionLost]);
 
   const start = useCallback(
     async (useMicrophone: boolean) => {
       if (startingRef.current || ACTIVE_STATES.has(state)) return;
       startingRef.current = true;
+      generationRef.current += 1;
+      const generation = generationRef.current;
+      attemptRef.current = 0;
       setError(undefined);
       setTurns([]);
       setReveal({});
       sealedRef.current = new Set();
-
-      const audioElement = audioRef.current;
-      if (!audioElement) {
-        setState("error");
-        setError("Audio output is not ready yet. Try again in a moment.");
-        startingRef.current = false;
-        return;
-      }
+      setMuted(false);
 
       try {
-        const handle = await connectRealtime({
-          tokenEndpoint,
-          sessionId,
-          audioElement,
-          useMicrophone,
-          onEvent: handleEvent,
-          onStateChange: setState,
-          onError: setError,
-        });
-        handleRef.current = handle;
-        setHasMicrophone(handle.hasMicrophone);
-        setMuted(false);
-      } catch (caught) {
-        setState("error");
-        if (caught instanceof MicrophoneUnavailableError) {
-          setError(micErrorMessage(caught.reason));
-        } else {
-          setError(caught instanceof Error ? caught.message : "Could not start the session.");
+        if (useMicrophone) {
+          setState("requesting-mic");
+          const stream = await requestMicrophone();
+          if (generationRef.current !== generation) {
+            // Stopped while the permission prompt was up; do not leave the mic on.
+            stream.getTracks().forEach((track) => track.stop());
+            return;
+          }
+          micRef.current = stream;
         }
+        setHasMicrophone(micRef.current !== undefined);
+        await openConnection(generation, false);
+      } catch (caught) {
+        if (generationRef.current === generation) fail(caught);
       } finally {
         startingRef.current = false;
       }
     },
-    [audioRef, handleEvent, sessionId, state, tokenEndpoint],
+    [fail, openConnection, state],
   );
 
   const toggleMute = useCallback(() => {
     // The track toggle is a side effect, so it must stay out of the state
     // updater -- React may invoke an updater more than once.
     const next = !muted;
-    handleRef.current?.setMuted(next);
+    micRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !next;
+    });
     setMuted(next);
   }, [muted]);
 

@@ -1,4 +1,5 @@
 import { parseServerEvent, type RealtimeClientEvent, type RealtimeServerEvent } from "./events";
+import { ConnectionWatchdog, type ConnectionLossReason } from "./reconnect";
 
 const CALLS_URL = "https://api.openai.com/v1/realtime/calls";
 
@@ -7,10 +8,8 @@ export type ConnectionState =
 
 export interface RealtimeSessionHandle {
   send(event: RealtimeClientEvent): void;
-  /** Returns the new muted state. No-op in text-only mode. */
-  setMuted(muted: boolean): void;
+  /** Tears the connection down. The microphone belongs to the caller and is left alone. */
   close(): void;
-  readonly hasMicrophone: boolean;
 }
 
 export interface ConnectOptions {
@@ -19,11 +18,34 @@ export interface ConnectOptions {
   sessionId?: string;
   /** Element the model's audio is piped into. */
   audioElement: HTMLAudioElement;
-  /** When false, connect receive-only (text fallback mode). */
-  useMicrophone: boolean;
+  /**
+   * Microphone to send, or undefined to connect receive-only (text mode).
+   *
+   * Owned by the caller so it survives a reconnect: asking for it again would
+   * mean a second permission prompt on some browsers, mid-conversation, and
+   * mute is a property of the track, so a reused track stays muted.
+   */
+  microphone?: MediaStream;
   onEvent(event: RealtimeServerEvent): void;
+  /** Reports connecting, live and reconnecting. Never reports a loss; see onConnectionLost. */
   onStateChange(state: ConnectionState): void;
   onError(message: string): void;
+  /**
+   * The connection is gone and will not recover by itself. Already cleaned up
+   * by the time this fires; the caller decides whether to rebuild.
+   */
+  onConnectionLost(reason: ConnectionLossReason): void;
+}
+
+/** The token route refused; `status` decides whether retrying could help. */
+export class TokenRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "TokenRequestError";
+  }
 }
 
 export class MicrophoneUnavailableError extends Error {
@@ -87,7 +109,7 @@ async function fetchEphemeralToken(
       typeof (payload as { error?: unknown }).error === "string"
         ? (payload as { error: string }).error
         : "Could not start a session.";
-    throw new Error(message);
+    throw new TokenRequestError(message, response.status);
   }
 
   const token = payload as { value?: unknown; model?: unknown } | null;
@@ -99,28 +121,29 @@ async function fetchEphemeralToken(
 }
 
 export async function connectRealtime(options: ConnectOptions): Promise<RealtimeSessionHandle> {
-  const { audioElement, onEvent, onStateChange, onError } = options;
-
-  let micStream: MediaStream | undefined;
-  let hasMicrophone = false;
-
-  if (options.useMicrophone) {
-    onStateChange("requesting-mic");
-    micStream = await requestMicrophone();
-    hasMicrophone = true;
-  }
+  const { audioElement, microphone, onEvent, onStateChange, onError, onConnectionLost } = options;
 
   onStateChange("connecting");
 
   const pc = new RTCPeerConnection({
-    iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+    // Two servers, so one being unreachable from a given network is not fatal.
+    iceServers: [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }],
   });
 
   let closed = false;
+  const watchdog = new ConnectionWatchdog({
+    onLive: () => onStateChange("live"),
+    onRecovering: () => onStateChange("reconnecting"),
+    onLost: (reason) => {
+      cleanup();
+      onConnectionLost(reason);
+    },
+  });
+
   const cleanup = () => {
     if (closed) return;
     closed = true;
-    micStream?.getTracks().forEach((track) => track.stop());
+    watchdog.stop();
     try {
       pc.close();
     } catch {
@@ -136,36 +159,18 @@ export async function connectRealtime(options: ConnectOptions): Promise<Realtime
       // Autoplay can still be refused; the caller starts this from a user
       // gesture, which is what satisfies iOS Safari.
       void audioElement.play().catch(() => {
-        onError("Tap the page to enable audio playback.");
+        onError("Your browser blocked the audio. Tap the conversation area to turn it on.");
       });
     }
   };
 
   pc.onconnectionstatechange = () => {
-    if (closed) return;
-    switch (pc.connectionState) {
-      case "connected":
-        onStateChange("live");
-        break;
-      case "disconnected":
-        onStateChange("reconnecting");
-        break;
-      case "failed":
-        onStateChange("error");
-        onError("Connection lost. Check your network and start a new session.");
-        cleanup();
-        break;
-      case "closed":
-        onStateChange("closed");
-        break;
-      default:
-        break;
-    }
+    if (!closed) watchdog.update(pc.connectionState);
   };
 
-  if (micStream) {
-    for (const track of micStream.getTracks()) {
-      pc.addTrack(track, micStream);
+  if (microphone) {
+    for (const track of microphone.getTracks()) {
+      pc.addTrack(track, microphone);
     }
   } else {
     // Text-only mode still needs to receive the model's audio.
@@ -182,6 +187,12 @@ export async function connectRealtime(options: ConnectOptions): Promise<Realtime
     }
   };
 
+  // A channel can die while the peer still reports connected, and nothing
+  // typed or spoken would reach the model after that.
+  channel.onclose = () => {
+    if (!closed) watchdog.channelClosed();
+  };
+
   channel.onmessage = (message: MessageEvent<string>) => {
     const event = parseServerEvent(message.data);
     if (!event) return;
@@ -192,30 +203,37 @@ export async function connectRealtime(options: ConnectOptions): Promise<Realtime
     onEvent(event);
   };
 
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
+  try {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 
-  const token = await fetchEphemeralToken(options.tokenEndpoint, options.sessionId);
+    const token = await fetchEphemeralToken(options.tokenEndpoint, options.sessionId);
 
-  const sdpResponse = await fetch(CALLS_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token.value}`,
-      "Content-Type": "application/sdp",
-    },
-    body: offer.sdp,
-  });
+    const sdpResponse = await fetch(CALLS_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token.value}`,
+        "Content-Type": "application/sdp",
+      },
+      body: offer.sdp,
+    });
 
-  if (!sdpResponse.ok) {
-    const detail = await sdpResponse.text().catch(() => "");
+    if (!sdpResponse.ok) {
+      const detail = await sdpResponse.text().catch(() => "");
+      throw new Error(
+        `Realtime handshake failed (${sdpResponse.status}). ${detail.slice(0, 200)}`.trim(),
+      );
+    }
+
+    const answerSdp = await sdpResponse.text();
+    await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+  } catch (error) {
+    // Previously a failed token request leaked the peer connection.
     cleanup();
-    throw new Error(
-      `Realtime handshake failed (${sdpResponse.status}). ${detail.slice(0, 200)}`.trim(),
-    );
+    throw error;
   }
 
-  const answerSdp = await sdpResponse.text();
-  await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+  watchdog.start();
 
   return {
     send(event) {
@@ -225,17 +243,19 @@ export async function connectRealtime(options: ConnectOptions): Promise<Realtime
         queued.push(event);
       }
     },
-    setMuted(muted) {
-      micStream?.getAudioTracks().forEach((track) => {
-        track.enabled = !muted;
-      });
-    },
     close() {
       cleanup();
-      onStateChange("closed");
-    },
-    get hasMicrophone() {
-      return hasMicrophone;
     },
   };
+}
+
+/** Whether a failed connection attempt is worth making again unchanged. */
+export function isRetryableConnectError(error: unknown): boolean {
+  if (error instanceof MicrophoneUnavailableError) return false;
+  // A 4xx from our own route is a decision, not a fault: an expired document,
+  // a rate limit, a bad request. Retrying would get the same answer, and for
+  // the rate limit would only dig the hole deeper.
+  if (error instanceof TokenRequestError) return error.status >= 500;
+  // Network failures, an upstream handshake error: plausibly transient.
+  return true;
 }

@@ -91,11 +91,20 @@ export function parseServerEvent(raw: string): RealtimeServerEvent | undefined {
 export type RealtimeClientEvent =
   | {
       type: "conversation.item.create";
-      item: {
-        type: "message";
-        role: "user";
-        content: Array<{ type: "input_text"; text: string }>;
-      };
+      item:
+        | {
+            /** Optional; set when replaying history so the echo can be matched up. */
+            id?: string;
+            type: "message";
+            role: "user";
+            content: Array<{ type: "input_text"; text: string }>;
+          }
+        | {
+            id?: string;
+            type: "message";
+            role: "assistant";
+            content: Array<{ type: "output_text"; text: string }>;
+          };
     }
   | { type: "response.create" }
   | { type: "response.cancel" };
