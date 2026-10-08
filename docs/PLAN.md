@@ -125,6 +125,27 @@ question about a specific detail by voice, get a correct spoken answer.
 **Exit criteria:** works locally for certain (spec accepts a local demo). Deployed path attempted
 via proxy; outcome documented honestly in the README either way.
 
+**Outcome (2026-10-07).** Works, server-side, with no API key and no browser — but only via the
+**Android InnerTube client**. YouTube gates the web client's caption URLs behind a BotGuard
+Proof-of-Origin token and marks them `exp=xpe`; fetching one returns `200` with an empty body, a
+refusal disguised as success. The Android client is served ungated URLs. Final path is three plain
+`fetch` calls, so `youtubei.js` was dropped entirely (-4 packages, no `serverExternalPackages`).
+
+The wrong turn, recorded because it cost the most: assuming the PO token was the gate. Minting a
+real one needs a browser (jsdom is rejected by BotGuard, real Chrome succeeds) and *still* returns an
+empty body — and even YouTube's own player gets nothing in headful Chrome. The token is a gate on
+web-client URLs that minting does not open. Full evidence table in the README.
+
+IP blocking is the live constraint, and it is worse than this plan assumed. A few dozen requests
+during development drew Google's "automated queries" block page as a `429`, on a *residential*
+connection -- it outlasted a 12-minute poll and was still in force hours later. Not a per-minute
+throttle, so the message says hours and points at the workaround. `YOUTUBE_PROXY_URL` is therefore
+closer to required than optional for a deployment on shared egress IPs.
+
+That risk is what drove **transcript caching by video id** (`src/lib/ingest/transcriptCache.ts`),
+added here rather than deferred to Stage 4: successful fetches only, one-week TTL, in-memory locally
+and Blob-backed in production, swept by the existing cron. Cache failures cannot fail an ingest.
+
 ## Stage 4 — Hardening, tests, README
 
 - **Tune the transcript reveal rate.** With `SPEECH_CHARS_PER_SECOND = 18` the voice still trails
