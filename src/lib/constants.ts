@@ -24,3 +24,15 @@ export const APPROX_CHARS_PER_TOKEN = 4;
  * or lifecycle feature, so deletion is entirely our responsibility.
  */
 export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * How long a fetched YouTube transcript stays cached.
+ *
+ * Far longer than SESSION_TTL_MS, and deliberately so: captions for a published
+ * video do not change, and the cached text is public content rather than the
+ * user's own upload, so it carries none of the privacy weight that keeps
+ * sessions short-lived. The length is set by what it protects against -- YouTube
+ * blocking the server's whole network for "automated queries", which lasts
+ * hours -- so a week of not re-asking for the same video is the point.
+ */
+export const TRANSCRIPT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;

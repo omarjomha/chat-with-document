@@ -16,6 +16,19 @@ const serverEnvSchema = z.object({
     .min(1, "OPENAI_API_KEY is required. Copy .env.example to .env.local and set it."),
   OPENAI_REALTIME_MODEL: z.string().min(1).default("gpt-realtime-2.1"),
   OPENAI_REALTIME_VOICE: z.string().min(1).default("marin"),
+  /**
+   * Optional egress prefix for YouTube requests. The target URL is appended
+   * percent-encoded, so `https://proxy.example/?url=` becomes
+   * `https://proxy.example/?url=https%3A%2F%2Fwww.youtube.com%2F...`.
+   *
+   * Empty-string handling matters: Vercel surfaces an unset project variable as
+   * "" rather than undefined, and a bare `.optional()` would then route every
+   * request through a prefix of nothing.
+   */
+  YOUTUBE_PROXY_URL: z
+    .union([z.literal(""), z.url()])
+    .optional()
+    .transform((value) => value || undefined),
 });
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;

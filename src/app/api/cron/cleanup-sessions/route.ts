@@ -1,10 +1,11 @@
+import { getTranscriptCache } from "@/lib/ingest/transcriptCache";
 import { getSessionStore } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Scheduled sweep of lapsed document sessions.
+ * Scheduled sweep of lapsed document sessions and cached transcripts.
  *
  * This is a backstop, not the primary mechanism. Sessions are swept on every
  * ingest and deleted explicitly when the user replaces a document, and expiry
@@ -27,9 +28,16 @@ export async function GET(request: Request): Promise<Response> {
   }
 
   try {
-    const removed = await getSessionStore().deleteExpired();
-    console.info(`[cron] swept ${removed} expired session(s)`);
-    return Response.json({ removed }, { headers: { "Cache-Control": "no-store" } });
+    // Cached transcripts are swept here only. Unlike sessions they are not
+    // swept on ingest: the whole point of the cache is to survive between
+    // visits, and a week-long TTL means there is rarely anything to remove.
+    const [removed, transcripts] = await Promise.all([
+      getSessionStore().deleteExpired(),
+      getTranscriptCache().deleteExpired(),
+    ]);
+
+    console.info(`[cron] swept ${removed} expired session(s), ${transcripts} cached transcript(s)`);
+    return Response.json({ removed, transcripts }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     console.error("[cron] sweep failed", error);
     return Response.json({ error: "Sweep failed." }, { status: 500 });
