@@ -16,4 +16,5 @@ export interface IngestResult {
   usedChars: number;
   approxTokens: number;
   pages?: number;
+  pagesWithoutText?: number;
 }

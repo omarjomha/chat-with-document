@@ -19,6 +19,10 @@ describe("cleanText", () => {
     expect(cleanText("a\u0000\u0007b\nc")).toBe("ab\nc");
   });
 
+  it("drops glyphs that extraction could not map to a character", () => {
+    expect(cleanText("caf� and icons")).toBe("caf and icons");
+  });
+
   it("rejoins words split by a soft hyphen at a line break", () => {
     expect(cleanText("exam­\nple")).toBe("example");
   });

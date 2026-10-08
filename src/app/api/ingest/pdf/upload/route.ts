@@ -1,6 +1,7 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 
 import { INGEST_RATE_LIMIT, MAX_PDF_BYTES } from "@/lib/constants";
+import { isStagedUploadPath } from "@/lib/ingest/uploads";
 import { guardRequest } from "@/lib/security/guard";
 import { createRateLimiter } from "@/lib/security/rateLimit";
 
@@ -39,15 +40,20 @@ export async function POST(request: Request): Promise<Response> {
     const result = await handleUpload({
       request,
       body,
-      onBeforeGenerateToken: async () => ({
-        allowedContentTypes: ["application/pdf"],
-        maximumSizeInBytes: MAX_PDF_BYTES,
-        addRandomSuffix: true,
-        // Uploaded PDFs are never reachable by URL; only this server can read
-        // them, using the store credentials.
-        access: "private",
-        validUntil: Date.now() + 60_000,
-      }),
+      onBeforeGenerateToken: async (pathname) => {
+        // The token is scoped to this pathname, so checking it here keeps
+        // every upload inside the folder the ingest route will accept.
+        if (!isStagedUploadPath(pathname)) throw new Error("Invalid upload path.");
+        return {
+          allowedContentTypes: ["application/pdf"],
+          maximumSizeInBytes: MAX_PDF_BYTES,
+          addRandomSuffix: true,
+          // Uploaded PDFs are never reachable by URL; only this server can read
+          // them, using the store credentials.
+          access: "private",
+          validUntil: Date.now() + 60_000,
+        };
+      },
       // Extraction is driven by an explicit client call to /api/ingest/pdf so
       // the user gets the result synchronously. Nothing to do on completion.
       onUploadCompleted: async () => {},

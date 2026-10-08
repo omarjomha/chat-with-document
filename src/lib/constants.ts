@@ -2,6 +2,22 @@
 export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 /**
+ * Blob folder for PDFs between upload and extraction.
+ *
+ * The ingest route reads and then deletes whatever pathname the browser names,
+ * so it must be confined to this folder; otherwise a crafted request could
+ * point it at a stored session or a cached transcript and delete that instead.
+ */
+export const PDF_UPLOAD_PREFIX = "uploads/";
+
+/**
+ * How long an uploaded PDF may sit unextracted before the sweep removes it.
+ * Extraction normally follows within seconds; a leftover means the browser
+ * went away between the two steps, leaving the user's file behind.
+ */
+export const STAGED_UPLOAD_TTL_MS = 60 * 60 * 1000;
+
+/**
  * Upper bound on document characters injected into the Realtime session.
  *
  * gpt-realtime-2.1 has a 128k-token context window. At a conservative ~4 chars

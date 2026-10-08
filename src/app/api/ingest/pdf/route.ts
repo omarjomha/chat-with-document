@@ -4,6 +4,7 @@ import { z } from "zod";
 import { MAX_PDF_BYTES } from "@/lib/constants";
 import { extractPdfText, PdfExtractionError } from "@/lib/ingest/pdf";
 import { createSession } from "@/lib/ingest/session";
+import { isStagedUploadPath } from "@/lib/ingest/uploads";
 import { guardRequest } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
@@ -12,8 +13,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 const requestSchema = z.object({
-  /** Blob pathname returned by the client upload. */
-  pathname: z.string().min(1).max(512),
+  /** Blob pathname returned by the client upload. Confined to the upload folder. */
+  pathname: z.string().min(1).max(512).refine(isStagedUploadPath),
   /** Original filename, used as the display title. */
   filename: z.string().min(1).max(255),
 });
@@ -46,13 +47,14 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const bytes = new Uint8Array(await new Response(blob.stream).arrayBuffer());
-    const { text, pages } = await extractPdfText(bytes);
+    const { text, pages, pagesWithoutText } = await extractPdfText(bytes);
 
     const result = await createSession({
       kind: "pdf",
       title: filename,
       rawText: text,
       pages,
+      pagesWithoutText,
     });
 
     // The PDF itself is a transient staging artefact; only the extracted text

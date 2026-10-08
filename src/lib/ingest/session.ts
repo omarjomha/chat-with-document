@@ -21,6 +21,8 @@ export interface IngestResult {
   usedChars: number;
   approxTokens: number;
   pages?: number;
+  /** PDF pages with no extractable text, likely scanned. Shown, not stored. */
+  pagesWithoutText?: number;
 }
 
 /**
@@ -34,6 +36,7 @@ export async function createSession(input: {
   title: string;
   rawText: string;
   pages?: number;
+  pagesWithoutText?: number;
 }): Promise<IngestResult> {
   const normalized = normalizeExtractedText(input.rawText);
   const now = Date.now();
@@ -76,5 +79,6 @@ export async function createSession(input: {
     usedChars: session.usedChars,
     approxTokens: session.approxTokens,
     pages: session.pages,
+    pagesWithoutText: input.pagesWithoutText,
   };
 }

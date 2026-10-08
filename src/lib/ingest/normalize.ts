@@ -25,6 +25,9 @@ export function cleanText(raw: string): string {
       .replace(/\r\n?/g, "\n")
       // Strip control characters except tab and newline.
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      // Glyphs extraction could not map to a character. Meaningless to the
+      // model, and they would otherwise be spent from the context budget.
+      .replace(/[�-]/g, "")
       // PDF extraction often emits a soft hyphen at a line break; rejoin.
       .replace(/\u00AD\n/g, "")
       // Collapse horizontal whitespace runs (column gutters, justified text).

@@ -3,7 +3,7 @@
 import { upload } from "@vercel/blob/client";
 import { useRef, useState } from "react";
 
-import { MAX_PDF_BYTES } from "@/lib/constants";
+import { MAX_PDF_BYTES, PDF_UPLOAD_PREFIX } from "@/lib/constants";
 
 import { readError, SourceError } from "./SourceError";
 import type { IngestResult } from "./types";
@@ -49,7 +49,7 @@ export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
       setPhase("uploading");
       // Straight to Blob storage: Vercel caps function bodies at 4.5 MB, well
       // under the 25 MB the spec requires.
-      const blob = await upload(file.name, file, {
+      const blob = await upload(stagingPath(file.name), file, {
         access: "private",
         handleUploadUrl: "/api/ingest/pdf/upload",
       });
@@ -132,6 +132,16 @@ function uploadErrorMessage(caught: unknown): string {
     return "Could not reach the server. Check your connection and try again.";
   }
   return message || "Upload failed.";
+}
+
+/**
+ * Where the file goes in Blob: the staging folder, the only place the server
+ * will extract from. A slash in the name would read as a subfolder, and a PDF
+ * picked by MIME type alone may lack the extension the server requires.
+ */
+function stagingPath(name: string): string {
+  const safe = name.replaceAll("/", "_");
+  return `${PDF_UPLOAD_PREFIX}${safe.toLowerCase().endsWith(".pdf") ? safe : `${safe}.pdf`}`;
 }
 
 function formatBytes(bytes: number): string {

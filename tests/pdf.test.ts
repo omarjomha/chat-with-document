@@ -4,8 +4,10 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { extractPdfText, PdfExtractionError } from "@/lib/ingest/pdf";
+import { extractPdfText, isMostlyUnreadable, PdfExtractionError } from "@/lib/ingest/pdf";
 import { normalizeExtractedText } from "@/lib/ingest/normalize";
+
+import { makePdf } from "./fixtures/makePdf";
 
 /**
  * Integration test against a real PDF committed to the repo (the assessment
@@ -59,5 +61,63 @@ describe("extractPdfText", () => {
     const notAPdf = new TextEncoder().encode("this is plainly not a pdf file");
 
     await expect(extractPdfText(notAPdf)).rejects.toBeInstanceOf(PdfExtractionError);
+  });
+
+  it("reports a truncated file, as from an interrupted download, as corrupt", async () => {
+    const whole = await loadSpecPdf();
+
+    await expect(extractPdfText(whole.slice(0, whole.length / 2))).rejects.toMatchObject({
+      code: "corrupt",
+    });
+  });
+
+  it("asks for the password to be removed from an encrypted PDF", async () => {
+    await expect(extractPdfText(makePdf(["secret"], { encrypted: true }))).rejects.toMatchObject({
+      code: "encrypted",
+      message: expect.stringMatching(/password/i),
+    });
+  });
+
+  it("rejects a PDF where no page has text, naming it as scanned", async () => {
+    await expect(extractPdfText(makePdf(["", "", ""]))).rejects.toMatchObject({
+      code: "no-text-layer",
+      message: expect.stringContaining("3 pages"),
+    });
+  });
+
+  it("counts pages without text in an otherwise readable PDF instead of hiding them", async () => {
+    const result = await extractPdfText(makePdf(["Introduction", "", "Conclusion", ""]));
+
+    expect(result.pages).toBe(4);
+    expect(result.pagesWithoutText).toBe(2);
+    expect(result.text).toContain("Introduction");
+    expect(result.text).toContain("Conclusion");
+  });
+
+  it("accepts a very short document rather than mistaking it for a scan", async () => {
+    const result = await extractPdfText(makePdf(["Hi"]));
+
+    expect(result.pagesWithoutText).toBe(0);
+    expect(result.text.trim()).toBe("Hi");
+  });
+
+  it("separates pages with a paragraph break, so truncation can land between them", async () => {
+    const { text } = await extractPdfText(makePdf(["Page one.", "Page two."]));
+
+    expect(text).toMatch(/Page one\.\s*\n\n\s*Page two\./);
+  });
+});
+
+describe("isMostlyUnreadable", () => {
+  it("flags text that is mostly unmapped glyphs", () => {
+    expect(isMostlyUnreadable(" �� a")).toBe(true);
+  });
+
+  it("tolerates a few stray unmapped glyphs in real text", () => {
+    expect(isMostlyUnreadable("A normal sentence with one odd glyph  in it.")).toBe(false);
+  });
+
+  it("does not flag ordinary text, in any script", () => {
+    expect(isMostlyUnreadable("Résumé — 東京 2026")).toBe(false);
   });
 });

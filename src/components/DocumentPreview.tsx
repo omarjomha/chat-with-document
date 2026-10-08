@@ -48,6 +48,16 @@ export function DocumentPreview({ document, onClear }: DocumentPreviewProps) {
         </p>
       )}
 
+      {document.pagesWithoutText !== undefined && document.pagesWithoutText > 0 && (
+        <p
+          role="status"
+          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+        >
+          {document.pagesWithoutText} of {document.pages} pages had no selectable text — probably
+          scanned images — so the assistant can&apos;t see what&apos;s on them.
+        </p>
+      )}
+
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
