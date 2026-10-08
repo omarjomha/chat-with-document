@@ -162,6 +162,19 @@ function assertNotRefused(response: Response, stage: "player" | "captions"): voi
   throw new YouTubeIngestError("blocked", `YouTube refused the request (HTTP ${response.status}).`);
 }
 
+/**
+ * Distinguishes YouTube's bot challenge from a genuinely restricted video.
+ *
+ * The wording has changed before, so this matches on the stable part -- the bot
+ * and sign-in-to-confirm phrasing -- and treats anything unrecognised as a real
+ * restriction, which is the safer default: it blames neither the network nor
+ * the user without evidence.
+ */
+function isBotCheck(reason: string | undefined): boolean {
+  if (!reason) return false;
+  return /not a bot|confirm you'?re not|bot|unusual traffic|automated/i.test(reason);
+}
+
 /** Maps a playability status onto an actionable message. */
 function fromPlayabilityStatus(status: string, reason?: string): YouTubeIngestError | undefined {
   switch (status) {
@@ -173,6 +186,24 @@ function fromPlayabilityStatus(status: string, reason?: string): YouTubeIngestEr
         "That video does not exist, or it has been removed.",
       );
     case "LOGIN_REQUIRED":
+      // LOGIN_REQUIRED has two unrelated causes and they need opposite
+      // messages. A genuinely private or age-gated video is the caller's
+      // problem and nothing will fix it. But YouTube also returns
+      // LOGIN_REQUIRED to bot-check an egress IP it distrusts, which is what a
+      // datacentre deployment gets for an ordinary public video -- observed on
+      // Vercel for "Me at the zoo", which is neither private nor age-gated.
+      // Calling that "private" would send the user hunting a nonexistent
+      // problem with the video.
+      if (isBotCheck(reason)) {
+        return new YouTubeIngestError(
+          "blocked",
+          "YouTube is challenging this server's network rather than serving the video. Deployments on shared cloud IPs usually need YOUTUBE_PROXY_URL set to a different egress.",
+        );
+      }
+      return new YouTubeIngestError(
+        "unavailable",
+        "That video is private or age-restricted, so its transcript cannot be read without signing in.",
+      );
     case "AGE_VERIFICATION_REQUIRED":
     case "CONTENT_CHECK_REQUIRED":
       return new YouTubeIngestError(
@@ -266,7 +297,15 @@ export async function fetchYouTubeTranscript(videoId: string): Promise<YouTubeTr
     const status = player.playabilityStatus;
     if (status?.status) {
       const refusal = fromPlayabilityStatus(status.status, status.reason);
-      if (refusal) throw refusal;
+      if (refusal) {
+        // YouTube's own wording is the only way to tell a bot challenge from a
+        // genuinely restricted video, so keep it in the logs even though the
+        // user-facing message is our own.
+        console.warn(
+          `[ingest] youtube refused ${videoId}: ${status.status} ${status.reason ?? "(no reason)"}`,
+        );
+        throw refusal;
+      }
     }
 
     const tracks = player.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];

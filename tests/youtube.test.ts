@@ -197,10 +197,54 @@ describe("fetchYouTubeTranscript", () => {
     ["UNPLAYABLE", "unavailable"],
     ["SOMETHING_NEW", "unavailable"],
   ])("maps playability status %s to %s", async (status, code) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     fetchMock.mockResolvedValueOnce(json(playerBody({ status })));
 
     const error = await expectCode(code);
     expect(error.message).not.toBe("");
+  });
+
+  /**
+   * LOGIN_REQUIRED is overloaded: a restricted video, or YouTube bot-checking
+   * the server's IP. Observed on Vercel for an ordinary public video, so the
+   * two must not share a message.
+   */
+  it.each([
+    "Sign in to confirm you're not a bot",
+    "Sign in to confirm you are not a bot",
+    "This helps protect our community. Learn more. Unusual traffic detected",
+    "Automated requests detected",
+  ])("reads LOGIN_REQUIRED with reason %j as a network block", async (reason) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(json(playerBody({ status: "LOGIN_REQUIRED", reason })));
+
+    const error = await expectCode("blocked");
+    expect(error.message).toMatch(/this server's network/i);
+    expect(error.message).toMatch(/YOUTUBE_PROXY_URL/);
+  });
+
+  it.each(["This video is private", "This video is available to members only", undefined])(
+    "still reads LOGIN_REQUIRED with reason %j as a restricted video",
+    async (reason) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      fetchMock.mockResolvedValueOnce(json(playerBody({ status: "LOGIN_REQUIRED", reason })));
+
+      const error = await expectCode("unavailable");
+      expect(error.message).toMatch(/private or age-restricted/i);
+    },
+  );
+
+  it("logs YouTube's own wording so a refusal can be diagnosed", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchMock.mockResolvedValueOnce(
+      json(playerBody({ status: "LOGIN_REQUIRED", reason: "This video is private" })),
+    );
+
+    await expectCode("unavailable");
+
+    expect(warned).toHaveBeenCalledWith(
+      expect.stringContaining("LOGIN_REQUIRED This video is private"),
+    );
   });
 
   it("surfaces YouTube's own reason for an unplayable video", async () => {
