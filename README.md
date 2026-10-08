@@ -48,6 +48,13 @@ arrangement:
 5. On the phone, open `https://<that-address>:3000` -- scheme and port both required, or Safari will
    search instead of connecting -- and accept the certificate warning.
 
+The `allowedDevOrigins` entries in `next.config.ts` are what make step 5 work, and the failure
+without them is thoroughly misleading: the page renders correctly and looks completely normal, but
+nothing is clickable. The dev server serves the HTML and the JS bundles to any caller, then refuses
+the dev-only endpoints the React client calls during hydration, because those carry an `Origin`
+header naming an address the server was not started with. Nothing in the page hints at it -- the
+only clue is a cross-origin message in the browser console.
+
 The laptop's traffic then exits over cellular, which YouTube has not flagged, while the phone
 reaches the laptop over the hotspot LAN. Allow the inbound connection if the firewall prompts.
 
