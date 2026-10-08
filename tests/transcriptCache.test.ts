@@ -207,7 +207,9 @@ describe("loadYouTubeTranscript", () => {
       .mockResolvedValueOnce(playerResponse("First"))
       .mockResolvedValueOnce(new Response(CAPTION_XML))
       .mockResolvedValueOnce(playerResponse("Second"))
-      .mockResolvedValueOnce(new Response(`<body><p>other words</p></body>`));
+      .mockResolvedValueOnce(
+        new Response(`<timedtext format="3"><body><p t="0">other words</p></body></timedtext>`),
+      );
 
     const first = await loadYouTubeTranscript("aaaaaaaaaaa");
     const second = await loadYouTubeTranscript("bbbbbbbbbbb");

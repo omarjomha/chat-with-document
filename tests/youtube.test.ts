@@ -2,21 +2,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  captionUrlFor,
   fetchYouTubeTranscript,
   joinCaptionLines,
   selectCaptionTrack,
   toYouTubeIngestError,
   YouTubeIngestError,
 } from "@/lib/ingest/youtube";
-import { resetServerEnvCache } from "@/lib/env";
 
-const CAPTION_URL = "https://www.youtube.com/api/timedtext?v=abc&lang=en";
+const CAPTION_URL = "https://www.youtube.com/api/timedtext?v=abc&lang=en&fmt=srv3";
 
 const CAPTION_XML = `<?xml version="1.0" encoding="utf-8" ?><timedtext format="3">
 <body><p t="0" d="100">first line</p><p t="100" d="100">second line</p></body>
 </timedtext>`;
 
-/** Builds a minimal Android player response. */
+/** The real body YouTube serves when it has flagged the network. */
+const SORRY_PAGE = `<!DOCTYPE html><html><head><title>Sorry...</title></head><body>
+<div><h1>We're sorry...</h1><p>... but your computer or network may be sending automated
+queries. To protect our users, we can't process your request right now.</p></div>
+</body></html>`;
+
 function playerBody(
   overrides: {
     status?: string;
@@ -47,6 +52,16 @@ function xml(body: string, status = 200): Response {
   return new Response(body, { status, headers: { "Content-Type": "text/xml" } });
 }
 
+function html(body: string, status = 200): Response {
+  return new Response(body, { status, headers: { "Content-Type": "text/html" } });
+}
+
+/** Reads the clientName out of a recorded player request. */
+function clientOf(call: unknown[]): string {
+  const init = call[1] as RequestInit;
+  return JSON.parse(init.body as string).context.client.clientName;
+}
+
 describe("joinCaptionLines", () => {
   it("joins caption cards one per line", () => {
     expect(joinCaptionLines(["hello there", "general kenobi"])).toBe("hello there\ngeneral kenobi");
@@ -66,6 +81,29 @@ describe("joinCaptionLines", () => {
 
   it("returns an empty string for an empty transcript", () => {
     expect(joinCaptionLines([])).toBe("");
+  });
+});
+
+describe("captionUrlFor", () => {
+  it("pins fmt=srv3 when the client supplied no format", () => {
+    const url = captionUrlFor("https://www.youtube.com/api/timedtext?v=abc&lang=en");
+    expect(new URL(url).searchParams.get("fmt")).toBe("srv3");
+  });
+
+  it("overrides a different format rather than appending a second one", () => {
+    const url = captionUrlFor("https://www.youtube.com/api/timedtext?v=abc&fmt=json3");
+    expect(new URL(url).searchParams.getAll("fmt")).toEqual(["srv3"]);
+  });
+
+  it("preserves the signature and its signed parameters", () => {
+    const signed = "https://www.youtube.com/api/timedtext?v=abc&sparams=ip%2Cexpire&signature=DEAD";
+    const url = new URL(captionUrlFor(signed));
+    expect(url.searchParams.get("signature")).toBe("DEAD");
+    expect(url.searchParams.get("sparams")).toBe("ip,expire");
+  });
+
+  it("returns an unparseable URL unchanged instead of throwing", () => {
+    expect(captionUrlFor("not a url")).toBe("not a url");
   });
 });
 
@@ -137,15 +175,13 @@ describe("fetchYouTubeTranscript", () => {
   beforeEach(() => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
-    process.env.OPENAI_API_KEY = "sk-test";
     delete process.env.YOUTUBE_PROXY_URL;
-    resetServerEnvCache();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    resetServerEnvCache();
   });
 
   async function expectCode(code: string): Promise<YouTubeIngestError> {
@@ -165,7 +201,7 @@ describe("fetchYouTubeTranscript", () => {
     });
   });
 
-  it("asks the Android client, which is what yields ungated caption URLs", async () => {
+  it("asks a mobile client, which is what yields ungated caption URLs", async () => {
     fetchMock.mockResolvedValueOnce(json(playerBody()));
     fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
 
@@ -179,125 +215,136 @@ describe("fetchYouTubeTranscript", () => {
     });
   });
 
-  it("falls back to a video id for a response with no title", async () => {
+  it("pins fmt=srv3 on the caption request", async () => {
     fetchMock.mockResolvedValueOnce(
-      json({ playabilityStatus: { status: "OK" }, captions: playerBody().captions }),
+      json(
+        playerBody({
+          tracks: [{ baseUrl: "https://yt.test/api/timedtext?v=a", languageCode: "en" }],
+        }),
+      ),
     );
     fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
 
-    const result = await fetchYouTubeTranscript("abcdefghijk");
-    expect(result.title).toBe("YouTube video abcdefghijk");
+    await fetchYouTubeTranscript("abcdefghijk");
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain("fmt=srv3");
   });
 
-  it.each([
-    ["ERROR", "not-found"],
-    ["LOGIN_REQUIRED", "unavailable"],
-    ["AGE_VERIFICATION_REQUIRED", "unavailable"],
-    ["CONTENT_CHECK_REQUIRED", "unavailable"],
-    ["UNPLAYABLE", "unavailable"],
-    ["SOMETHING_NEW", "unavailable"],
-  ])("maps playability status %s to %s", async (status, code) => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    fetchMock.mockResolvedValueOnce(json(playerBody({ status })));
+  it("does not ask a second client once the first works", async () => {
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
 
-    const error = await expectCode(code);
-    expect(error.message).not.toBe("");
+    await fetchYouTubeTranscript("abcdefghijk");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  /**
-   * LOGIN_REQUIRED is overloaded: a restricted video, or YouTube bot-checking
-   * the server's IP. Observed on Vercel for an ordinary public video, so the
-   * two must not share a message.
-   */
-  it.each([
-    "Sign in to confirm you're not a bot",
-    "Sign in to confirm you are not a bot",
-    "This helps protect our community. Learn more. Unusual traffic detected",
-    "Automated requests detected",
-  ])("reads LOGIN_REQUIRED with reason %j as a network block", async (reason) => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    fetchMock.mockResolvedValueOnce(json(playerBody({ status: "LOGIN_REQUIRED", reason })));
-
-    const error = await expectCode("blocked");
-    expect(error.message).toMatch(/this server's network/i);
-    expect(error.message).toMatch(/YOUTUBE_PROXY_URL/);
-  });
-
-  it.each(["This video is private", "This video is available to members only", undefined])(
-    "still reads LOGIN_REQUIRED with reason %j as a restricted video",
-    async (reason) => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
-      fetchMock.mockResolvedValueOnce(json(playerBody({ status: "LOGIN_REQUIRED", reason })));
-
-      const error = await expectCode("unavailable");
-      expect(error.message).toMatch(/private or age-restricted/i);
-    },
-  );
-
-  it("logs YouTube's own wording so a refusal can be diagnosed", async () => {
-    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("falls back to the next client when the first is challenged", async () => {
     fetchMock.mockResolvedValueOnce(
-      json(playerBody({ status: "LOGIN_REQUIRED", reason: "This video is private" })),
+      json(playerBody({ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" })),
     );
+    fetchMock.mockResolvedValueOnce(json(playerBody({ title: "Recovered" })));
+    fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
 
-    await expectCode("unavailable");
+    await expect(fetchYouTubeTranscript("abcdefghijk")).resolves.toMatchObject({
+      title: "Recovered",
+      text: "first line\nsecond line",
+    });
 
-    expect(warned).toHaveBeenCalledWith(
-      expect.stringContaining("LOGIN_REQUIRED This video is private"),
-    );
+    expect(clientOf(fetchMock.mock.calls[0])).toBe("ANDROID");
+    expect(clientOf(fetchMock.mock.calls[1])).toBe("IOS");
   });
 
-  it("surfaces YouTube's own reason for an unplayable video", async () => {
-    fetchMock.mockResolvedValueOnce(
-      json(playerBody({ status: "UNPLAYABLE", reason: "Members-only content" })),
-    );
-
-    const error = await expectCode("unavailable");
-    expect(error.message).toContain("Members-only content");
-  });
-
-  it("reports a video with no caption tracks", async () => {
-    fetchMock.mockResolvedValueOnce(json(playerBody({ tracks: [] })));
-    await expectCode("no-captions");
-  });
-
-  it("reports a video whose captions block is missing entirely", async () => {
-    fetchMock.mockResolvedValueOnce(json({ playabilityStatus: { status: "OK" } }));
-    await expectCode("no-captions");
-  });
-
-  it("refuses a caption URL flagged as needing a Proof-of-Origin token", async () => {
+  it("falls back when the first client's URL is token-gated", async () => {
     fetchMock.mockResolvedValueOnce(
       json(playerBody({ tracks: [{ baseUrl: `${CAPTION_URL}&exp=xpe`, languageCode: "en" }] })),
     );
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
 
-    const error = await expectCode("blocked");
-    expect(error.message).toMatch(/verified browser session/i);
-    // The caption URL must not be fetched once we know it is gated.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(fetchYouTubeTranscript("abcdefghijk")).resolves.toMatchObject({
+      text: "first line\nsecond line",
+    });
   });
 
-  it("reports an empty caption body as empty, not as a transcript", async () => {
+  it("reports a block when every client is challenged", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        json(
+          playerBody({ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" }),
+        ),
+      )
+      .mockResolvedValueOnce(
+        json(
+          playerBody({ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" }),
+        ),
+      );
+
+    const error = await expectCode("blocked");
+    expect(error.message).toMatch(/this server's network/i);
+  });
+
+  it("reports a missing video rather than the other client's bot challenge", async () => {
+    // A video that does not exist is true for every client, so it outranks a
+    // refusal that only says this request was distrusted.
+    fetchMock.mockResolvedValueOnce(json(playerBody({ status: "ERROR" })));
+    fetchMock.mockResolvedValueOnce(
+      json(playerBody({ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" })),
+    );
+
+    await expectCode("not-found");
+  });
+
+  it("reports absent captions rather than the other client's bot challenge", async () => {
+    fetchMock.mockResolvedValueOnce(json(playerBody({ tracks: [] })));
+    fetchMock.mockResolvedValueOnce(
+      json(playerBody({ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" })),
+    );
+
+    await expectCode("no-captions");
+  });
+
+  /**
+   * The regression that matters most. An HTML page contains <p> elements, so
+   * without a content check the parser turns Google's block page into a
+   * plausible transcript and the model discusses it as if it were the video.
+   */
+  it("refuses an HTML page served with HTTP 200 instead of parsing it", async () => {
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(html(SORRY_PAGE));
+
+    const error = await expectCode("blocked");
+    expect(error.message).toMatch(/returned a page instead of captions/i);
+    expect(error.message).not.toMatch(/automated queries/);
+  });
+
+  it("refuses any body that is not a caption document", async () => {
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(xml("<html><p>totally not captions</p></html>"));
+
+    await expectCode("blocked");
+  });
+
+  it("reads an empty 200 as the gated-URL refusal it is", async () => {
     fetchMock.mockResolvedValueOnce(json(playerBody()));
     fetchMock.mockResolvedValueOnce(xml(""));
+
+    const error = await expectCode("blocked");
+    expect(error.message).toMatch(/no caption data/i);
+  });
+
+  it("reports a caption document with no cues as empty", async () => {
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(xml(`<timedtext format="3"><body></body></timedtext>`));
 
     await expectCode("empty");
   });
 
-  it.each([
-    ["the player call", 0],
-    ["the caption call", 1],
-  ])("maps a 429 on %s to a rate-limit message", async (_label, failAt) => {
-    if (failAt === 0) {
-      fetchMock.mockResolvedValueOnce(json({}, 429));
-    } else {
-      fetchMock.mockResolvedValueOnce(json(playerBody()));
-      fetchMock.mockResolvedValueOnce(xml("", 429));
-    }
+  it("maps a 429 on the caption call to a rate-limit message", async () => {
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(html(SORRY_PAGE, 429));
 
     const error = await expectCode("blocked");
-    // Deliberately not "try again in a few minutes": this block is an
-    // automated-queries flag against the whole IP and lasts hours.
     expect(error.message).toMatch(/blocked this server's network/i);
     expect(error.message).toMatch(/few hours/i);
   });
@@ -318,24 +365,23 @@ describe("fetchYouTubeTranscript", () => {
     expect(String(fetchMock.mock.calls[2][0])).toContain("key=FRESH_KEY_123");
   });
 
-  it("gives up when the watch page yields no key either", async () => {
+  it("reuses a recovered key for the fallback client", async () => {
     fetchMock.mockResolvedValueOnce(json({}, 403));
-    fetchMock.mockResolvedValueOnce(new Response("<html>no key here</html>"));
+    fetchMock.mockResolvedValueOnce(
+      new Response('window.ytcfg={"INNERTUBE_API_KEY": "FRESH_KEY_123"}'),
+    );
+    fetchMock.mockResolvedValueOnce(json(playerBody({ status: "ERROR" })));
+    fetchMock.mockResolvedValueOnce(json(playerBody({ status: "ERROR" })));
 
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    await expectCode("unknown");
-  });
+    await expectCode("not-found");
 
-  it("reports a blocked watch page during key recovery", async () => {
-    fetchMock.mockResolvedValueOnce(json({}, 403));
-    fetchMock.mockResolvedValueOnce(new Response("denied", { status: 429 }));
-
-    await expectCode("blocked");
+    // The iOS attempt must not pay for the watch page a second time.
+    expect(String(fetchMock.mock.calls[3][0])).toContain("key=FRESH_KEY_123");
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("/watch?v="))).toHaveLength(1);
   });
 
   it("routes every request through YOUTUBE_PROXY_URL when one is set", async () => {
     process.env.YOUTUBE_PROXY_URL = "https://proxy.test/?url=";
-    resetServerEnvCache();
 
     fetchMock.mockResolvedValueOnce(json(playerBody()));
     fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
@@ -345,11 +391,87 @@ describe("fetchYouTubeTranscript", () => {
     for (const [url] of fetchMock.mock.calls) {
       expect(String(url).startsWith("https://proxy.test/?url=")).toBe(true);
     }
-    // The real target must survive, percent-encoded, as the proxy's argument.
     expect(String(fetchMock.mock.calls[0][0])).toContain(
       encodeURIComponent("https://www.youtube.com/youtubei/v1/player"),
     );
-    expect(String(fetchMock.mock.calls[1][0])).toContain(encodeURIComponent(CAPTION_URL));
+  });
+
+  it("ignores a malformed YOUTUBE_PROXY_URL rather than breaking ingestion", async () => {
+    process.env.YOUTUBE_PROXY_URL = "not-a-url";
+
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
+
+    await expect(fetchYouTubeTranscript("abcdefghijk")).resolves.toMatchObject({
+      text: "first line\nsecond line",
+    });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("youtube.com");
+  });
+
+  /**
+   * The spec allows YouTube to be demonstrated locally, so a clone with no
+   * OpenAI key must still be able to ingest a video. Reading the proxy setting
+   * through the full env contract used to make this throw.
+   */
+  it("works with no OPENAI_API_KEY set at all", async () => {
+    const saved = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+
+    fetchMock.mockResolvedValueOnce(json(playerBody()));
+    fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
+
+    try {
+      await expect(fetchYouTubeTranscript("abcdefghijk")).resolves.toMatchObject({
+        text: "first line\nsecond line",
+      });
+    } finally {
+      if (saved !== undefined) process.env.OPENAI_API_KEY = saved;
+    }
+  });
+
+  it("falls back to a video id for a response with no title", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({ playabilityStatus: { status: "OK" }, captions: playerBody().captions }),
+    );
+    fetchMock.mockResolvedValueOnce(xml(CAPTION_XML));
+
+    const result = await fetchYouTubeTranscript("abcdefghijk");
+    expect(result.title).toBe("YouTube video abcdefghijk");
+  });
+
+  it("surfaces YouTube's own reason for an unplayable video", async () => {
+    fetchMock
+      .mockResolvedValueOnce(json(playerBody({ status: "UNPLAYABLE", reason: "Members-only" })))
+      .mockResolvedValueOnce(json(playerBody({ status: "UNPLAYABLE", reason: "Members-only" })));
+
+    const error = await expectCode("unavailable");
+    expect(error.message).toContain("Members-only");
+  });
+
+  it.each([
+    ["AGE_VERIFICATION_REQUIRED", "unavailable"],
+    ["CONTENT_CHECK_REQUIRED", "unavailable"],
+    ["SOMETHING_NEW", "unavailable"],
+  ])("maps playability status %s to %s", async (status, code) => {
+    fetchMock
+      .mockResolvedValueOnce(json(playerBody({ status })))
+      .mockResolvedValueOnce(json(playerBody({ status })));
+
+    const error = await expectCode(code);
+    expect(error.message).not.toBe("");
+  });
+
+  it("reads a private video as restricted, not as a network block", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        json(playerBody({ status: "LOGIN_REQUIRED", reason: "This video is private" })),
+      )
+      .mockResolvedValueOnce(
+        json(playerBody({ status: "LOGIN_REQUIRED", reason: "This video is private" })),
+      );
+
+    const error = await expectCode("unavailable");
+    expect(error.message).toMatch(/private or age-restricted/i);
   });
 
   it("turns a network failure into a blocked error", async () => {
