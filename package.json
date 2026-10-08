@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "verify:youtube": "vitest run --config vitest.live.config.mts"
   },
   "dependencies": {
     "@vercel/blob": "^2.8.1",
