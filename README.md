@@ -115,6 +115,24 @@ of returning an empty transcript.
   says so rather than suggesting a quick retry. `YOUTUBE_PROXY_URL` is the workaround, and on a
   deployment with shared egress IPs it should be considered necessary rather than optional.
 
+### The deployed path: attempted, and it fails differently
+
+The spec treats deployed YouTube ingestion as a bonus. It was attempted and it does not work, but it
+is worth recording _how_ it fails, because it is not the same failure as a throttled local machine.
+
+On a Vercel preview, the player call succeeds and returns `LOGIN_REQUIRED` with a
+sign-in-to-confirm-you-are-not-a-bot reason -- for "Me at the zoo", a video that is neither private
+nor age-gated. YouTube is challenging the datacentre IP, not describing the video. Locally the same
+code instead draws a `429` on the caption fetch once the IP is flagged. Two different defences, same
+root cause: YouTube does not want anonymous servers reading captions.
+
+This is why `LOGIN_REQUIRED` is not reported as "this video is private" (see
+`fromPlayabilityStatus`): on a cloud deployment that message would send you hunting a problem with
+the video that does not exist. The bot challenge reports as `blocked` and names the actual fix.
+
+`YOUTUBE_PROXY_URL` is that fix -- pointing the InnerTube calls at a non-datacentre egress. It is
+wired and ready; it is unset here because it needs a proxy to point at.
+
 ### Transcript caching
 
 Every avoided request to YouTube is a real reduction in block risk, and repeat requests for the same

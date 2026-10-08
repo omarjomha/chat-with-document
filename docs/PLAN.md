@@ -142,6 +142,12 @@ connection -- it outlasted a 12-minute poll and was still in force hours later. 
 throttle, so the message says hours and points at the workaround. `YOUTUBE_PROXY_URL` is therefore
 closer to required than optional for a deployment on shared egress IPs.
 
+Deployed path (bonus): attempted, fails differently from local. Vercel's egress draws
+`LOGIN_REQUIRED` with a bot-check reason on the *player* call, where a flagged residential IP
+instead draws `429` on the *caption* call. That overload is now disambiguated -- a bot challenge
+reports `blocked` and names `YOUTUBE_PROXY_URL`, rather than falsely claiming the video is private.
+Setting `YOUTUBE_PROXY_URL` to a non-datacentre egress remains the untested route to the bonus.
+
 That risk is what drove **transcript caching by video id** (`src/lib/ingest/transcriptCache.ts`),
 added here rather than deferred to Stage 4: successful fetches only, one-week TTL, in-memory locally
 and Blob-backed in production, swept by the existing cron. Cache failures cannot fail an ingest.
