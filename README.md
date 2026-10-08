@@ -29,10 +29,11 @@ No YouTube or Google API key is needed. See below for why.
 ### Checks
 
 ```bash
-npm run test        # Vitest
-npm run typecheck   # tsc --noEmit
+npm run test             # Vitest, never touches the network
+npm run typecheck        # tsc --noEmit
 npm run lint
 npm run build
+npm run verify:youtube   # live check against the real YouTube API (see below)
 ```
 
 ## How it works
@@ -63,17 +64,67 @@ Nothing downstream of that knows or cares which source it came from.
 YouTube ingestion works, server-side, with no API key and no browser — but only via one specific
 route, and the obvious routes are all dead. Worth recording, because the failure mode is silent.
 
-**The trick: ask the Android client.** YouTube gates the _web_ client's caption URLs behind a
+**The trick: ask a mobile client.** YouTube gates the _web_ client's caption URLs behind a
 Proof-of-Origin token minted by its BotGuard attestation runtime, and marks a gated URL with
 `exp=xpe`. Fetching one returns **HTTP 200 with a zero-length body** — a refusal dressed as a
-success, which is what makes this expensive to diagnose. The Android InnerTube client
-(`clientName: "ANDROID"`) is served caption URLs _without_ that flag, and those fetch normally.
+success, which is what makes this expensive to diagnose. The Android and iOS InnerTube clients are
+served caption URLs _without_ that flag, and those fetch normally.
 
 So the whole path is three plain `fetch` calls, in `src/lib/ingest/youtube.ts`:
 
-1. `POST /youtubei/v1/player` with the Android client context → the caption tracklist.
+1. `POST /youtubei/v1/player` with a mobile client context → the caption tracklist.
 2. Pick a track (human-written over auto-generated, English first).
-3. `GET` the track's `baseUrl` → `timedtext format="3"` XML → parse to lines.
+3. `GET` the track's `baseUrl` with `fmt=srv3` pinned → `timedtext format="3"` XML → parse to lines.
+
+Measured client support, same IP, same moment: Android and iOS both return `OK` with ungated URLs;
+`ANDROID_VR`, `ANDROID_MUSIC`, `ANDROID_CREATOR` and `TVHTML5` return `LOGIN_REQUIRED`; `WEB` and
+`MWEB` return `UNPLAYABLE`; the embedded players return `ERROR`. Hence exactly two clients are
+tried, in that order.
+
+### Two guards worth knowing about
+
+**Clients are tried in turn.** Android first, then iOS. They are refused independently — a Vercel
+egress IP got `LOGIN_REQUIRED` from Android while a residential IP got `OK` from both — so one
+extra request is the difference between working and not when YouTube sours on one of them. When
+every client fails, the _most definitive_ refusal is reported rather than whichever was last: a
+video that does not exist, or demonstrably has no captions, is true regardless of which client
+asked, so those outrank a bot challenge that only says this request was distrusted.
+
+Note the limit of this: it helps when the **player** call is refused. It does not help when
+`/api/timedtext` itself is IP-blocked, because both clients' caption URLs point at that same
+endpoint.
+
+**Caption responses are validated before parsing.** This fixes a measured, silent corruption path.
+Requesting a caption URL can return HTTP 200 with an HTML page — an interstitial, a consent screen,
+or Google's "your computer or network may be sending automated queries" page. HTML contains `<p>`
+elements, and the caption parser reads `<p>` elements, so that page parses into a convincing fake
+transcript:
+
+```
+["... but your computer or network may be sending automated queries.
+  To protect our users, we can't process your request right now."]
+```
+
+The model would then discuss Google's error message as though it were the video. Requiring a
+timed-text root element (`<timedtext>` or `<transcript>`) before parsing is a cheap, total defence,
+since every real caption document has one and no HTML page does. A 200 that is not a caption
+document is reported as `blocked`, never as content.
+
+### Verifying it against live YouTube
+
+`npm test` never touches the network. To check the real thing:
+
+```bash
+npm run verify:youtube
+YOUTUBE_VERIFY_URL="https://youtu.be/<id>" npm run verify:youtube   # your own video
+```
+
+This calls the same `fetchYouTubeTranscript` the app uses, so a pass is evidence about the shipped
+code rather than about a reimplementation. It prints the title, character and token counts, and the
+first line, and asserts that no markup or HTML entity survived into the text.
+
+If it reports `blocked`, that is YouTube refusing your network, not a defect — retry from another
+connection, since a phone hotspot is usually enough.
 
 ### What did not work
 
@@ -107,6 +158,11 @@ of returning an empty transcript.
 - **The InnerTube key is a constant, with a recovery path.** The public web key has been stable for
   years, so paying for a ~1 MB watch-page fetch on every ingest to scrape it would be wasteful. If
   the key is ever rejected, the code scrapes a fresh one from the watch page and retries once.
+- **Ingestion does not depend on the OpenAI key.** `getServerEnv()` validates the whole contract at
+  once, which is right for the Realtime route — it cannot work without a key. But reading the
+  optional proxy setting through the same accessor meant a missing `OPENAI_API_KEY` broke transcript
+  extraction too. Since the spec allows YouTube to be demonstrated locally, a clone with no OpenAI
+  key can now still ingest a video; `getYouTubeProxyUrl()` reads that one variable on its own.
 - **IP blocking is the real operational risk, and it is worse than the spec suggests.** The spec
   warns that YouTube blocks cloud provider IPs. It blocks residential ones too: a few dozen requests
   while developing this drew Google's "your computer or network may be sending automated queries"

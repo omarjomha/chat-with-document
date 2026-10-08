@@ -148,6 +148,29 @@ instead draws `429` on the *caption* call. That overload is now disambiguated --
 reports `blocked` and names `YOUTUBE_PROXY_URL`, rather than falsely claiming the video is private.
 Setting `YOUTUBE_PROXY_URL` to a non-datacentre egress remains the untested route to the bonus.
 
+Hardening pass after a self-review (prompted by: it works locally, so where are the gaps?). Three
+real defects were found, none of which the earlier tests would have caught:
+
+1. **Silent corruption.** A caption URL can answer HTTP 200 with an HTML page, and HTML has `<p>`
+   elements, so the parser turned Google's block page into a plausible transcript -- verified, it
+   parses to "... but your computer or network may be sending automated queries." Caption bodies are
+   now required to carry a timed-text root element before being parsed.
+2. **No client fallback.** A single pinned Android client was one YouTube change from breaking, and
+   the clients are refused independently (Vercel's IP was refused by Android). Android then iOS are
+   tried now, reporting the most definitive refusal when both fail. Measured: only those two return
+   ungated caption URLs; every other client is refused outright.
+3. **Ingestion depended on the OpenAI key.** Reading the proxy setting through `getServerEnv()`
+   meant a missing `OPENAI_API_KEY` broke transcript extraction, even though the spec allows
+   YouTube to be demonstrated locally without one.
+
+Also pinned `fmt=srv3` on the caption URL (Android sends it, iOS does not, so the response shape was
+client-dependent) and taught the parser the legacy `<text>` shape as a fallback.
+
+Verification gap closed too: the chain route -> client selection -> parse -> normalise -> store ->
+prompt had never been exercised together, only link by link, because a live run was blocked. There
+is now an end-to-end test over realistic fixtures, plus `npm run verify:youtube` for a live check
+against the real API using the shipped code path.
+
 That risk is what drove **transcript caching by video id** (`src/lib/ingest/transcriptCache.ts`),
 added here rather than deferred to Stage 4: successful fetches only, one-week TTL, in-memory locally
 and Blob-backed in production, swept by the existing cron. Cache failures cannot fail an ingest.
