@@ -8,7 +8,7 @@ export default function Home() {
           Talk to a Document
         </h1>
         <p className="text-sm text-slate-600 dark:text-slate-400">
-          Upload a PDF, then ask questions out loud.
+          Upload a PDF or paste a YouTube link, then ask questions out loud.
         </p>
       </header>
 
