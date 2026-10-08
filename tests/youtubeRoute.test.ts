@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { YouTubeIngestError } from "@/lib/ingest/youtube";
+import { resetRateLimiters } from "@/lib/security/rateLimit";
 
 const loadYouTubeTranscript = vi.fn();
 const createSession = vi.fn();
@@ -31,6 +32,7 @@ describe("POST /api/ingest/youtube", () => {
   beforeEach(() => {
     loadYouTubeTranscript.mockReset();
     createSession.mockReset();
+    resetRateLimiters();
   });
 
   afterEach(() => {

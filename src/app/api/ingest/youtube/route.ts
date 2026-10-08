@@ -1,8 +1,11 @@
 import { z } from "zod";
 
+import { INGEST_RATE_LIMIT } from "@/lib/constants";
 import { createSession } from "@/lib/ingest/session";
 import { loadYouTubeTranscript, YouTubeIngestError } from "@/lib/ingest/youtube";
 import { parseYouTubeVideoId } from "@/lib/ingest/youtubeUrl";
+import { guardRequest } from "@/lib/security/guard";
+import { createRateLimiter } from "@/lib/security/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +28,12 @@ const STATUS_BY_CODE: Record<YouTubeIngestError["code"], number> = {
   unknown: 500,
 };
 
+const limiter = createRateLimiter(INGEST_RATE_LIMIT.limit, INGEST_RATE_LIMIT.windowMs);
+
 export async function POST(request: Request): Promise<Response> {
+  const refused = guardRequest(request, limiter);
+  if (refused) return refused;
+
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "Invalid request body." }, { status: 400 });

@@ -36,3 +36,22 @@ export const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
  * hours -- so a week of not re-asking for the same video is the point.
  */
 export const TRANSCRIPT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Per-client allowance for minting Realtime sessions.
+ *
+ * Every mint opens a billed session, which makes this the endpoint worth
+ * abusing. Ten in ten minutes covers a real user starting, stopping and
+ * starting again, plus a few automatic reconnects on a poor network, while
+ * capping what one script in a loop can spend.
+ */
+export const TOKEN_RATE_LIMIT = { limit: 10, windowMs: 10 * 60 * 1000 } as const;
+
+/**
+ * Per-client allowance for ingesting a document.
+ *
+ * For YouTube this protects the server's IP reputation as much as its CPU:
+ * YouTube blocks a whole network for hours after a few dozen requests, so one
+ * visitor pasting links in a loop could take the feature down for everyone.
+ */
+export const INGEST_RATE_LIMIT = { limit: 10, windowMs: 10 * 60 * 1000 } as const;

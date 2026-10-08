@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { z } from "zod";
 
+import { TOKEN_RATE_LIMIT } from "@/lib/constants";
 import type { DocumentContext } from "@/lib/prompt";
 import { mintClientSecret, RealtimeMintError } from "@/lib/realtime/mintClientSecret";
+import { guardRequest } from "@/lib/security/guard";
+import { createRateLimiter } from "@/lib/security/rateLimit";
 import { getSessionStore } from "@/lib/store";
 
 // Node.js runtime on Fluid Compute. The Edge runtime is deprecated on Vercel,
@@ -17,7 +20,14 @@ const requestSchema = z.object({
   sessionId: z.string().uuid().optional(),
 });
 
+const limiter = createRateLimiter(TOKEN_RATE_LIMIT.limit, TOKEN_RATE_LIMIT.windowMs);
+
 export async function POST(request: Request): Promise<Response> {
+  // The URL is public and unauthenticated, as the spec requires, and every
+  // successful call here opens a session billed to this app's key.
+  const refused = guardRequest(request, limiter);
+  if (refused) return refused;
+
   let body: unknown = {};
   if (request.headers.get("content-length") !== "0") {
     body = await request.json().catch(() => ({}));

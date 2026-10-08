@@ -70,7 +70,7 @@ export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
 
       onIngested(payload as IngestResult);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Upload failed.");
+      setError(uploadErrorMessage(caught));
     } finally {
       setPhase("idle");
       // Allow re-selecting the same file after an error.
@@ -116,6 +116,22 @@ export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
       {error && <SourceError message={error} />}
     </div>
   );
+}
+
+/**
+ * The Blob client discards the handshake route's response body and throws its
+ * own fixed wording, so the server's reason -- usually the rate limit -- never
+ * reaches here. Say what is actionable instead of echoing library internals.
+ */
+function uploadErrorMessage(caught: unknown): string {
+  const message = caught instanceof Error ? caught.message : "";
+  if (/client token/i.test(message)) {
+    return "The server refused the upload. If you have uploaded several files in the last few minutes, wait a little and try again.";
+  }
+  if (caught instanceof TypeError) {
+    return "Could not reach the server. Check your connection and try again.";
+  }
+  return message || "Upload failed.";
 }
 
 function formatBytes(bytes: number): string {

@@ -1,9 +1,13 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 
-import { MAX_PDF_BYTES } from "@/lib/constants";
+import { INGEST_RATE_LIMIT, MAX_PDF_BYTES } from "@/lib/constants";
+import { guardRequest } from "@/lib/security/guard";
+import { createRateLimiter } from "@/lib/security/rateLimit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const limiter = createRateLimiter(INGEST_RATE_LIMIT.limit, INGEST_RATE_LIMIT.windowMs);
 
 /**
  * Issues short-lived client tokens for direct browser-to-Blob uploads.
@@ -17,7 +21,19 @@ export const dynamic = "force-dynamic";
  * after we have already paid to transfer it.
  */
 export async function POST(request: Request): Promise<Response> {
-  const body = (await request.json()) as HandleUploadBody;
+  const body = (await request.json().catch(() => null)) as HandleUploadBody | null;
+  if (!body) {
+    return Response.json({ error: "Invalid request body." }, { status: 400 });
+  }
+
+  // Only the browser's token request is limited. Blob's completion callback
+  // arrives at this same URL from Vercel's own infrastructure, and counting it
+  // against whichever address it came from would be meaningless.
+  const refused = guardRequest(
+    request,
+    body.type === "blob.generate-client-token" ? limiter : undefined,
+  );
+  if (refused) return refused;
 
   try {
     const result = await handleUpload({

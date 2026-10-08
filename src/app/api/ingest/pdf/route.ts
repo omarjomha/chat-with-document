@@ -4,6 +4,7 @@ import { z } from "zod";
 import { MAX_PDF_BYTES } from "@/lib/constants";
 import { extractPdfText, PdfExtractionError } from "@/lib/ingest/pdf";
 import { createSession } from "@/lib/ingest/session";
+import { guardRequest } from "@/lib/security/guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,6 +19,12 @@ const requestSchema = z.object({
 });
 
 export async function POST(request: Request): Promise<Response> {
+  // Origin only. The rate limit sits on the upload handshake instead, which
+  // refuses before any bytes are stored; limiting here would strand a PDF
+  // that had already been uploaded.
+  const refused = guardRequest(request);
+  if (refused) return refused;
+
   const parsed = requestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return Response.json({ error: "Invalid request body." }, { status: 400 });
