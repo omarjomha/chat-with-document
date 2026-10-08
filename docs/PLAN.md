@@ -101,6 +101,17 @@ Hardcoded placeholder context. No ingestion yet. **This is the stage you verify 
 **Exit criteria (you verify):** speak a question on your phone, hear a spoken answer, see both sides
 in the live transcript, interrupt the model mid-answer and have it stop, mute and stop work.
 
+**Status: voice confirmed working on a phone on 2026-10-08**, against the local HTTPS dev server
+rather than a deployment — `npm run dev:https -- -H <laptop-ip>`, iPhone on its own hotspot. Asking
+a question by voice and hearing a spoken answer both work. The rest of the exit criteria above —
+both halves in the transcript feed, interrupting mid-answer, mute and stop — were not separately
+exercised in that session, so they remain covered only by the unit tests.
+
+The failure that preceded it was pure configuration: no `.env.local`, so the token route returned
+`500 "Check server configuration."` before any WebRTC negotiation. Recorded in the README with the
+two `curl` probes that tell a missing key apart from a blocked network, because the symptom reads as
+a realtime defect while the realtime code was never involved.
+
 ## Stage 2 — PDF ingestion + context injection
 
 - Blob client-upload handshake; reject >25MB and non-PDF before upload.
@@ -129,8 +140,10 @@ via proxy; outcome documented honestly in the README either way.
 laptop tethered to a phone hotspot, exercising the shipped `fetchYouTubeTranscript`. The same check
 from the development machine was refused at the same moment: that machine's IP had been blocked by
 YouTube after heavy probing while this was being built, and the block is per-connection, so it is a
-demo constraint rather than a code one. Still outstanding: one run of the *whole* flow — ingest a
-video then hold the voice conversation about it — on an unblocked connection.
+demo constraint rather than a code one. The *whole* flow then ran end to end on 2026-10-08 from an
+iPhone against the local HTTPS dev server — video ingested, transcript extracted, voice conversation
+held about it, all on the one hotspot connection — which closes the item this paragraph previously
+left open.
 
 **Outcome (2026-10-07).** Works, server-side, with no API key and no browser — but only via the
 **Android InnerTube client**. YouTube gates the web client's caption URLs behind a BotGuard
@@ -221,4 +234,6 @@ and Blob-backed in production, swept by the existing cron. Cache failures cannot
 ## 7. Open items
 
 - Vercel CLI is installed but **not logged in** — needs an interactive `vercel login` from you.
-- `OPENAI_API_KEY` to be placed in `.env.local` (never committed).
+- ~~`OPENAI_API_KEY` to be placed in `.env.local`~~ — done 2026-10-08 (never committed; `.env*` is
+  gitignored with an `!.env.example` exception). Its absence is what broke local voice; the error it
+  produces, and how to tell it apart from a network fault, are documented in the README.

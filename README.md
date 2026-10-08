@@ -65,6 +65,38 @@ Management, then enabled under Settings → General → About → Certificate Tr
 tunnel in front of the dev server for a genuinely trusted certificate. A tunnel only affects
 inbound traffic, so YouTube ingestion keeps working over cellular either way.
 
+**Last confirmed working: 2026-10-08** — an iPhone on its own hotspot, against `npm run dev:https`
+on the tethered laptop: YouTube link ingested, transcript extracted, spoken conversation held about
+it. That is the whole flow on one connection, which is what the spec asks for.
+
+Voice failed on the first attempt there, and the cause is worth recording because it presents as a
+realtime problem and is not one: there was no `.env.local`, so `getServerEnv()` threw and
+`POST /api/realtime/token` returned `500` with `Realtime session could not be started. Check server
+configuration.` The browser never reached the WebRTC handshake. Ingestion kept working throughout,
+because `getYouTubeProxyUrl()` reads its one variable separately and needs no OpenAI key.
+
+Two `curl` probes separate a configuration fault from a network one, and are worth running before
+touching any client code:
+
+```bash
+# 1. Does our own route mint a secret? 200 = key present and accepted.
+curl -sk -X POST https://localhost:3000/api/realtime/token \
+  -H 'Content-Type: application/json' -d '{}'
+
+# 2. Does OpenAI accept that secret? Deliberately invalid SDP body.
+TOKEN=$(curl -sk -X POST https://localhost:3000/api/realtime/token \
+  -H 'Content-Type: application/json' -d '{}' | sed -E 's/.*"value":"([^"]*)".*/\1/')
+curl -s -X POST https://api.openai.com/v1/realtime/calls \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/sdp' -d 'not-a-real-sdp'
+```
+
+Read the second one by status code, not by the fact that it errors. `400 invalid_offer` is the
+**pass**: the credential authenticated and only the garbage SDP was rejected, which also proves
+egress to `api.openai.com` works from the current connection. `401` means the token itself was
+refused. If both probes pass and voice still fails on the phone, the remaining suspect is ICE rather
+than auth — `src/lib/realtime/client.ts` configures a single STUN server, and a carrier NAT that
+eats STUN leaves the connection stuck in `connecting` before it reports "Connection lost."
+
 ### Environment
 
 | Variable                | Required | Notes                                                                                                                                                |
