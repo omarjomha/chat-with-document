@@ -40,7 +40,8 @@ export function TranscriptFeed({ turns, emptyHint }: TranscriptFeedProps) {
       {visible.map((turn) => (
         <TurnBubble key={turn.id} turn={turn} />
       ))}
-      <div ref={endRef} />
+      {/* The margin keeps the newest line clear of the pinned session controls. */}
+      <div ref={endRef} className="scroll-mb-48" />
     </div>
   );
 }

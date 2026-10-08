@@ -26,6 +26,10 @@ const TABS: ReadonlyArray<{ id: Tab; label: string }> = [
  */
 export function SourcePicker({ disabled, onIngested }: SourcePickerProps) {
   const [tab, setTab] = useState<Tab>("pdf");
+  // Switching tabs remounts the form, which would hide an upload still running
+  // and then surprise the user when it finished. Hold the tab until it does.
+  const [busy, setBusy] = useState(false);
+  const locked = disabled || busy;
 
   return (
     <section className="flex flex-col gap-3">
@@ -44,10 +48,10 @@ export function SourcePicker({ disabled, onIngested }: SourcePickerProps) {
             id={`source-tab-${id}`}
             aria-selected={tab === id}
             aria-controls={`source-panel-${id}`}
-            disabled={disabled}
+            disabled={locked}
             onClick={() => setTab(id)}
             className={[
-              "min-h-10 flex-1 rounded-lg text-sm font-medium transition",
+              "min-h-10 flex-1 rounded-lg text-sm font-medium transition disabled:opacity-60",
               tab === id
                 ? "bg-white text-slate-900 shadow-sm dark:bg-slate-800 dark:text-slate-100"
                 : "text-slate-600 dark:text-slate-400",
@@ -67,9 +71,9 @@ export function SourcePicker({ disabled, onIngested }: SourcePickerProps) {
         key={tab}
       >
         {tab === "pdf" ? (
-          <PdfUploader disabled={disabled} onIngested={onIngested} />
+          <PdfUploader disabled={disabled} onIngested={onIngested} onBusyChange={setBusy} />
         ) : (
-          <YouTubeInput disabled={disabled} onIngested={onIngested} />
+          <YouTubeInput disabled={disabled} onIngested={onIngested} onBusyChange={setBusy} />
         )}
       </div>
     </section>

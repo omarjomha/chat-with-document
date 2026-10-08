@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 
-import { useRealtimeSession } from "@/lib/realtime/useRealtimeSession";
+import { useRealtimeSession, type RealtimeSession } from "@/lib/realtime/useRealtimeSession";
 
 import { ConnectionStatus } from "./ConnectionStatus";
 import { SessionControls } from "./SessionControls";
@@ -21,6 +21,7 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
   const [textMode, setTextMode] = useState(false);
 
   const isLive = session.state === "live" || session.state === "reconnecting";
+  const inSession = isLive || session.state === "connecting" || session.state === "requesting-mic";
   // Text input is always available during a live session: it doubles as the
   // spec's microphone fallback and as a quiet-room alternative.
   const showTextInput = isLive && (textMode || !session.hasMicrophone);
@@ -72,7 +73,7 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
             type="button"
             onClick={session.clearError}
             aria-label="Dismiss error"
-            className="shrink-0 text-lg leading-none opacity-60"
+            className="-m-2 flex h-9 w-9 shrink-0 items-center justify-center text-lg leading-none opacity-60"
           >
             ×
           </button>
@@ -92,45 +93,70 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
         <MicStatus muted={session.muted} speaking={session.userSpeaking} />
       )}
 
-      <TranscriptFeed
-        turns={session.turns}
-        emptyHint={
-          isLive
-            ? session.hasMicrophone
-              ? "Say something to get started."
-              : "Type a message to get started."
-            : "Start a session to begin the conversation."
-        }
-      />
+      <TranscriptFeed turns={session.turns} emptyHint={emptyHint(session, Boolean(sessionId))} />
 
-      {/* Disabled while reconnecting: there is no channel to send on. */}
-      {showTextInput && (
-        <TextChatInput disabled={session.state !== "live"} onSend={session.sendText} />
-      )}
+      {/*
+        Pinned to the bottom of the screen while a session is running. On a
+        phone the transcript soon pushes everything below the fold, and mute,
+        end and "stop talking" are exactly the controls that must not need a
+        scroll to reach mid-answer.
+      */}
+      <div
+        className={[
+          "flex flex-col gap-2",
+          inSession
+            ? "sticky bottom-0 z-10 -mx-4 border-t border-slate-200 bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95"
+            : "",
+        ].join(" ")}
+      >
+        {/* Disabled while reconnecting: there is no channel to send on. */}
+        {showTextInput && (
+          <TextChatInput disabled={session.state !== "live"} onSend={session.sendText} />
+        )}
 
-      <SessionControls
-        state={session.state}
-        muted={session.muted}
-        hasMicrophone={session.hasMicrophone}
-        modelSpeaking={session.modelSpeaking}
-        onStartVoice={startVoice}
-        onStartText={startText}
-        onStop={session.stop}
-        onToggleMute={session.toggleMute}
-        onInterrupt={session.interrupt}
-      />
+        <SessionControls
+          state={session.state}
+          muted={session.muted}
+          hasMicrophone={session.hasMicrophone}
+          modelSpeaking={session.modelSpeaking}
+          onStartVoice={startVoice}
+          onStartText={startText}
+          onStop={session.stop}
+          onToggleMute={session.toggleMute}
+          onInterrupt={session.interrupt}
+        />
 
-      {isLive && session.hasMicrophone && !textMode && (
-        <button
-          type="button"
-          onClick={() => setTextMode(true)}
-          className="text-xs font-medium text-slate-500 underline underline-offset-4 dark:text-slate-400"
-        >
-          Type instead
-        </button>
-      )}
+        {isLive && session.hasMicrophone && !textMode && (
+          <button
+            type="button"
+            onClick={() => setTextMode(true)}
+            className="min-h-10 text-xs font-medium text-slate-500 underline underline-offset-4 dark:text-slate-400"
+          >
+            Type instead
+          </button>
+        )}
+      </div>
     </section>
   );
+}
+
+/** What the empty transcript says, so every state tells the user what happens next. */
+function emptyHint(session: RealtimeSession, hasDocument: boolean): string {
+  switch (session.state) {
+    case "requesting-mic":
+      return "Allow microphone access to start talking.";
+    case "connecting":
+      return "Connecting…";
+    case "live":
+    case "reconnecting":
+      return session.hasMicrophone
+        ? "Ask a question out loud to get started."
+        : "Type a question to get started.";
+    default:
+      return hasDocument
+        ? "Start a voice chat to ask about it."
+        : "Load a PDF or YouTube video above — or start now to chat without one.";
+  }
 }
 
 /**

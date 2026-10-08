@@ -30,7 +30,7 @@ export function DocumentPreview({ document, onClear }: DocumentPreviewProps) {
         <button
           type="button"
           onClick={onClear}
-          className="shrink-0 text-xs font-medium text-slate-500 underline underline-offset-4 dark:text-slate-400"
+          className="-my-2 min-h-10 shrink-0 px-1 text-xs font-medium text-slate-500 underline underline-offset-4 dark:text-slate-400"
         >
           Replace
         </button>
@@ -62,7 +62,7 @@ export function DocumentPreview({ document, onClear }: DocumentPreviewProps) {
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="self-start text-xs font-medium text-slate-600 underline underline-offset-4 dark:text-slate-300"
+        className="-my-2 min-h-10 self-start text-xs font-medium text-slate-600 underline underline-offset-4 dark:text-slate-300"
       >
         {open ? "Hide extracted text" : "Show extracted text"}
       </button>

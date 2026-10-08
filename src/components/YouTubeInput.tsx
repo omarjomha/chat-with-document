@@ -10,12 +10,19 @@ import type { IngestResult } from "./types";
 interface YouTubeInputProps {
   disabled: boolean;
   onIngested: (result: IngestResult) => void;
+  /** Lets the picker lock its tabs while a request is in flight. */
+  onBusyChange?: (busy: boolean) => void;
 }
 
-export function YouTubeInput({ disabled, onIngested }: YouTubeInputProps) {
+export function YouTubeInput({ disabled, onIngested, onBusyChange }: YouTubeInputProps) {
   const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(false);
   const [error, setError] = useState<string>();
+
+  function setBusy(next: boolean) {
+    setBusyState(next);
+    onBusyChange?.(next);
+  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -44,8 +51,11 @@ export function YouTubeInput({ disabled, onIngested }: YouTubeInputProps) {
       }
 
       onIngested(payload as IngestResult);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not reach the server.");
+    } catch {
+      // fetch only rejects when the request never got an answer; its own
+      // wording ("Failed to fetch", "Load failed") varies by browser and says
+      // nothing useful.
+      setError("Could not reach the server. Check your connection and try again.");
     } finally {
       setBusy(false);
     }

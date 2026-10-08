@@ -11,24 +11,30 @@ import type { IngestResult } from "./types";
 interface PdfUploaderProps {
   disabled: boolean;
   onIngested: (result: IngestResult) => void;
+  /** Lets the picker lock its tabs while a file is in flight. */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 type Phase = "idle" | "uploading" | "extracting";
 
-const PHASE_LABEL: Record<Exclude<Phase, "idle">, string> = {
-  uploading: "Uploading…",
-  extracting: "Extracting text…",
-};
-
-export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
+export function PdfUploader({ disabled, onIngested, onBusyChange }: PdfUploaderProps) {
   const [phase, setPhase] = useState<Phase>("idle");
+  // Upload is the slow step on a phone: 25 MB over cellular is a long wait
+  // with nothing moving, which reads as hung.
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string>();
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const busy = phase !== "idle";
 
+  function changePhase(next: Phase) {
+    setPhase(next);
+    onBusyChange?.(next !== "idle");
+  }
+
   async function handleFile(file: File) {
     setError(undefined);
+    setProgress(0);
 
     // Check locally first so the user gets an instant answer instead of
     // waiting out an upload that the server will reject.
@@ -46,15 +52,16 @@ export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
     }
 
     try {
-      setPhase("uploading");
+      changePhase("uploading");
       // Straight to Blob storage: Vercel caps function bodies at 4.5 MB, well
       // under the 25 MB the spec requires.
       const blob = await upload(stagingPath(file.name), file, {
         access: "private",
         handleUploadUrl: "/api/ingest/pdf/upload",
+        onUploadProgress: ({ percentage }) => setProgress(percentage),
       });
 
-      setPhase("extracting");
+      changePhase("extracting");
       const response = await fetch("/api/ingest/pdf", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -72,7 +79,7 @@ export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
     } catch (caught) {
       setError(uploadErrorMessage(caught));
     } finally {
-      setPhase("idle");
+      changePhase("idle");
       // Allow re-selecting the same file after an error.
       if (inputRef.current) inputRef.current.value = "";
     }
@@ -99,9 +106,26 @@ export function PdfUploader({ disabled, onIngested }: PdfUploaderProps) {
             if (file) void handleFile(file);
           }}
         />
-        {busy ? (
-          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-            {PHASE_LABEL[phase]}
+        {phase === "uploading" ? (
+          <span className="flex w-full max-w-56 flex-col items-center gap-2" role="status">
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Uploading… {Math.round(progress)}%
+            </span>
+            <span className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+              <span
+                className="block h-full rounded-full bg-slate-900 transition-[width] dark:bg-slate-100"
+                style={{ width: `${progress}%` }}
+              />
+            </span>
+          </span>
+        ) : phase === "extracting" ? (
+          <span className="flex flex-col items-center gap-1" role="status">
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+              Extracting text…
+            </span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Long documents can take a little while.
+            </span>
           </span>
         ) : (
           <>
