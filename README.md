@@ -24,18 +24,29 @@ things make it fiddly, and they have one shared answer.
 text fallback works. Hence:
 
 ```bash
-npm run dev:https      # self-signed cert, generated on first run
+npm run dev:https -- -H <laptop-ip>    # e.g. -H 172.20.10.2
 ```
+
+`-H` matters and is easy to miss: Next's generated certificate covers only `localhost`, `127.0.0.1`
+and `::1`. Without the flag, a phone opening `https://<laptop-ip>:3000` gets a certificate whose
+name does not match the address, and iOS Safari treats a name mismatch far more harshly than an
+untrusted issuer -- frequently refusing to offer a bypass at all. Passing `-H` adds that address to
+the certificate, and Next regenerates automatically when the existing one does not cover it.
 
 **YouTube ingestion needs an unblocked egress** (see the YouTube section). Both are satisfied by one
 arrangement:
 
 1. Turn on the phone's hotspot and connect the **laptop** to it.
-2. Leave the phone on its own hotspot network.
-3. Run `npm run dev:https` on the laptop.
-4. Find the laptop's address on that network — `ipconfig` on Windows, or
-   `ipconfig getifaddr en0` / `ifconfig | grep "inet "` on macOS.
-5. On the phone, open `https://<that-address>:3000` and accept the certificate warning.
+2. Leave the phone on its own hotspot network. The hotspot host is the gateway for that network, so
+   it can reach its own clients.
+3. Find the laptop's address **on the hotspot network** — `ipconfig` on Windows, or
+   `ipconfig getifaddr en0` on macOS. An iPhone hotspot hands out `172.20.10.x`, so that is the
+   number to look for; ignore `169.254.*` and any VirtualBox or Hyper-V adapter. Next's own startup
+   banner is not a reliable source here -- it has been observed printing a virtual adapter's
+   address instead.
+4. Start the server with that address: `npm run dev:https -- -H <laptop-ip>`.
+5. On the phone, open `https://<that-address>:3000` -- scheme and port both required, or Safari will
+   search instead of connecting -- and accept the certificate warning.
 
 The laptop's traffic then exits over cellular, which YouTube has not flagged, while the phone
 reaches the laptop over the hotspot LAN. Allow the inbound connection if the firewall prompts.
