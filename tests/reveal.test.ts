@@ -5,6 +5,7 @@ import {
   hasPendingReveal,
   revealedText,
   SPEECH_CHARS_PER_SECOND,
+  speakingTurnId,
 } from "@/lib/realtime/reveal";
 
 describe("advanceReveal", () => {
@@ -90,5 +91,41 @@ describe("hasPendingReveal", () => {
 
   it("is false for an empty transcript", () => {
     expect(hasPendingReveal([], {})).toBe(false);
+  });
+});
+
+describe("speakingTurnId", () => {
+  const first = { id: "a1", role: "assistant", text: "First reply.", status: "final" };
+  const second = { id: "a2", role: "assistant", text: "Second reply.", status: "final" };
+  const question = { id: "u1", role: "user", text: "A question", status: "final" };
+
+  it("holds a queued reply back until the one before it is fully revealed", () => {
+    // Both replies have arrived in full; only the first is being spoken.
+    expect(speakingTurnId([question, first, second], { a1: 4 })).toBe("a1");
+  });
+
+  it("moves on to the next reply once the first is caught up", () => {
+    expect(speakingTurnId([first, second], { a1: first.text.length })).toBe("a2");
+  });
+
+  it("keeps the floor for a reply still streaming, even when caught up", () => {
+    // More of it is on its way, and its audio plays before anything queued.
+    const streaming = { ...first, status: "streaming" };
+    expect(speakingTurnId([streaming, second], { a1: first.text.length })).toBe("a1");
+  });
+
+  it("keeps the floor for a reply announced but with no text yet", () => {
+    const announced = { ...first, text: "", status: "streaming" };
+    expect(speakingTurnId([announced, second], {})).toBe("a1");
+  });
+
+  it("ignores user turns", () => {
+    expect(speakingTurnId([{ ...question, status: "streaming" }, first], {})).toBe("a1");
+  });
+
+  it("is undefined when everything has been revealed", () => {
+    expect(
+      speakingTurnId([first, second], { a1: first.text.length, a2: second.text.length }),
+    ).toBeUndefined();
   });
 });

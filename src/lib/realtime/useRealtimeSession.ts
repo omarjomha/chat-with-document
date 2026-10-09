@@ -12,7 +12,7 @@ import {
 } from "./client";
 import { textMessageEvent, type RealtimeServerEvent } from "./events";
 import { historyReplayEvents, reconnectDelay } from "./reconnect";
-import { advanceReveal, hasPendingReveal, revealedText } from "./reveal";
+import { advanceReveal, hasPendingReveal, revealedText, speakingTurnId } from "./reveal";
 import { orderTurns, type TurnSlot } from "./turnOrder";
 
 /** A transcript turn. `streaming` turns render with a live caret. */
@@ -328,19 +328,14 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
       previous = now;
 
       setReveal((current) => {
-        let changed = false;
-        const next = { ...current };
+        // Only the reply being spoken advances; any queued behind it waits its
+        // turn, as its audio does.
+        const id = speakingTurnId(turnsRef.current, current);
+        const turn = turnsRef.current.find((candidate) => candidate.id === id);
+        if (!turn) return current;
 
-        for (const turn of turnsRef.current) {
-          if (turn.role !== "assistant") continue;
-          const advanced = advanceReveal(current[turn.id] ?? 0, turn.text.length, elapsed);
-          if (advanced !== (current[turn.id] ?? 0)) {
-            next[turn.id] = advanced;
-            changed = true;
-          }
-        }
-
-        return changed ? next : current;
+        const advanced = advanceReveal(current[turn.id] ?? 0, turn.text.length, elapsed);
+        return advanced === (current[turn.id] ?? 0) ? current : { ...current, [turn.id]: advanced };
       });
     }, REVEAL_TICK_MS);
 

@@ -50,6 +50,29 @@ export function revealedText(text: string, revealed: number): string {
   return text.slice(0, Math.floor(revealed));
 }
 
+/**
+ * The one assistant turn whose reveal may advance right now: the earliest that
+ * has not finished being spoken.
+ *
+ * The voice plays replies one after another, never together, so the text must
+ * do the same. Advancing every turn at once printed a queued second reply
+ * while the first was still being read out.
+ *
+ * A turn still streaming holds the floor even when its cursor has caught up
+ * with the text received so far: more of it is coming, and its audio is still
+ * ahead of anything queued behind it.
+ */
+export function speakingTurnId(
+  turns: ReadonlyArray<{ id: string; role: string; text: string; status: string }>,
+  reveal: Readonly<Record<string, number>>,
+): string | undefined {
+  return turns.find(
+    (turn) =>
+      turn.role === "assistant" &&
+      ((reveal[turn.id] ?? 0) < turn.text.length || turn.status === "streaming"),
+  )?.id;
+}
+
 /** True when any revealing is still outstanding, used to gate the timer. */
 export function hasPendingReveal(
   turns: ReadonlyArray<{ id: string; role: string; text: string }>,
