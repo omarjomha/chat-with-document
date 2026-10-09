@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { useRealtimeSession, type RealtimeSession } from "@/lib/realtime/useRealtimeSession";
 
@@ -12,9 +12,17 @@ import { TranscriptFeed } from "./TranscriptFeed";
 interface VoiceChatProps {
   /** Set in Stage 2 once a document has been ingested. */
   sessionId?: string;
+  /** Shown above the conversation, scrolling with it. */
+  children?: ReactNode;
 }
 
-export function VoiceChat({ sessionId }: VoiceChatProps) {
+/** Horizontal page gutter, widened by the side safe-area insets in landscape. */
+const GUTTER = "pr-[max(1rem,env(safe-area-inset-right))] pl-[max(1rem,env(safe-area-inset-left))]";
+
+/** How close to the end still counts as reading the newest line. */
+const FOLLOW_SLACK_PX = 48;
+
+export function VoiceChat({ sessionId, children }: VoiceChatProps) {
   // This component owns the audio sink; the hook only needs a handle to it.
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const session = useRealtimeSession({ sessionId, audioRef });
@@ -25,6 +33,48 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
   // Text input is always available during a live session: it doubles as the
   // spec's microphone fallback and as a quiet-room alternative.
   const showTextInput = isLive && (textMode || !session.hasMicrophone);
+
+  /*
+   * The transcript scrolls inside its own region, and the controls sit below
+   * it as an ordinary flex item, so they cannot be pushed off screen.
+   *
+   * The page used to scroll instead, with the controls `sticky` to the bottom
+   * and the feed calling smooth scrollIntoView on every reveal tick -- twenty
+   * times a second while an answer printed. On an iPhone that pushed the
+   * controls out of frame mid-answer: iOS Safari is unreliable with sticky
+   * layers under constant programmatic scrolling, and its toolbar overlaps the
+   * bottom of a scrolling page. Desktop Chrome, even emulating a phone, held
+   * the bar in place, so this removes every ingredient rather than one: the
+   * page never scrolls, nothing is sticky, and following the text is a plain
+   * scrollTop on this region.
+   */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // False once the reader scrolls up to re-read, so new text stops dragging
+  // them back down. Reaching the end again resumes following.
+  const followRef = useRef(true);
+  const shownTurns = session.turns.filter((turn) => turn.text.trim().length > 0);
+  const shownCount = shownTurns.length;
+  const shownChars = shownTurns.reduce((total, turn) => total + turn.text.length, 0);
+  const previousCountRef = useRef(0);
+
+  // Before paint, so the newest line never flashes below the fold first.
+  useLayoutEffect(() => {
+    const region = scrollRef.current;
+    const newTurn = shownCount > previousCountRef.current;
+    previousCountRef.current = shownCount;
+    if (!region || shownCount === 0) return;
+    // A new message always comes into view, even from the top of the page,
+    // which is where the reader is when the first answer starts.
+    if (newTurn) followRef.current = true;
+    if (followRef.current) region.scrollTop = region.scrollHeight;
+  }, [shownCount, shownChars]);
+
+  function handleScroll() {
+    const region = scrollRef.current;
+    if (!region) return;
+    followRef.current =
+      region.scrollHeight - region.scrollTop - region.clientHeight <= FOLLOW_SLACK_PX;
+  }
 
   async function startVoice() {
     setTextMode(false);
@@ -48,7 +98,7 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
   }
 
   return (
-    <section className="flex flex-col gap-4" onPointerDown={resumeAudio}>
+    <section className="flex min-h-0 flex-1 flex-col" onPointerDown={resumeAudio}>
       {/*
         The model's voice plays through this element. It must live in the
         document -- a detached media element can have its playback delayed or
@@ -58,55 +108,68 @@ export function VoiceChat({ sessionId }: VoiceChatProps) {
       */}
       <audio ref={audioRef} autoPlay playsInline />
 
-      <header className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Conversation</h2>
-        <ConnectionStatus state={session.state} />
-      </header>
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        className={`flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto overscroll-contain pb-4 ${GUTTER}`}
+      >
+        {children}
 
-      {session.error && (
-        <div
-          role="alert"
-          className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
-        >
-          <p className="min-w-0">{session.error}</p>
-          <button
-            type="button"
-            onClick={session.clearError}
-            aria-label="Dismiss error"
-            className="-m-2 flex h-9 w-9 shrink-0 items-center justify-center text-lg leading-none opacity-60"
-          >
-            ×
-          </button>
+        <div className="flex flex-col gap-4">
+          <header className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              Conversation
+            </h2>
+            <ConnectionStatus state={session.state} />
+          </header>
+
+          {session.error && (
+            <div
+              role="alert"
+              className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+            >
+              <p className="min-w-0">{session.error}</p>
+              <button
+                type="button"
+                onClick={session.clearError}
+                aria-label="Dismiss error"
+                className="-m-2 flex h-9 w-9 shrink-0 items-center justify-center text-lg leading-none opacity-60"
+              >
+                ×
+              </button>
+            </div>
+          )}
+
+          {session.state === "reconnecting" && (
+            <p
+              role="status"
+              className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+            >
+              Connection dropped. Reconnecting — the conversation will pick up where it left off.
+            </p>
+          )}
+
+          {isLive && session.hasMicrophone && (
+            <MicStatus muted={session.muted} speaking={session.userSpeaking} />
+          )}
+
+          <TranscriptFeed
+            turns={session.turns}
+            emptyHint={emptyHint(session, Boolean(sessionId))}
+          />
         </div>
-      )}
-
-      {session.state === "reconnecting" && (
-        <p
-          role="status"
-          className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
-        >
-          Connection dropped. Reconnecting — the conversation will pick up where it left off.
-        </p>
-      )}
-
-      {isLive && session.hasMicrophone && (
-        <MicStatus muted={session.muted} speaking={session.userSpeaking} />
-      )}
-
-      <TranscriptFeed turns={session.turns} emptyHint={emptyHint(session, Boolean(sessionId))} />
+      </div>
 
       {/*
-        Pinned to the bottom of the screen while a session is running. On a
-        phone the transcript soon pushes everything below the fold, and mute,
-        end and "stop talking" are exactly the controls that must not need a
-        scroll to reach mid-answer.
+        Always on screen, below the scrolling region rather than over it. On a
+        phone, mute, end and "stop talking" are exactly the controls that must
+        not need a scroll to reach mid-answer.
       */}
       <div
         className={[
-          "flex flex-col gap-2",
-          inSession
-            ? "sticky bottom-0 z-10 -mx-4 border-t border-slate-200 bg-white/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur dark:border-slate-800 dark:bg-slate-950/95"
-            : "",
+          "flex shrink-0 flex-col gap-2 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]",
+          GUTTER,
+          inSession ? "border-t border-slate-200 dark:border-slate-800" : "",
         ].join(" ")}
       >
         {/* Disabled while reconnecting: there is no channel to send on. */}

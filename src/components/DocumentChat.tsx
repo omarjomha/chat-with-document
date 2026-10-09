@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { DocumentPreview } from "./DocumentPreview";
 import { SourcePicker } from "./SourcePicker";
@@ -14,7 +14,7 @@ import { VoiceChat } from "./VoiceChat";
  * any live conversation -- continuing to talk against stale context would be
  * worse than making the user start again.
  */
-export function DocumentChat() {
+export function DocumentChat({ children }: { children?: ReactNode }) {
   const [document, setDocument] = useState<IngestResult>();
 
   // Mirrors `document` so the unload handler can read the current id without
@@ -54,14 +54,15 @@ export function DocumentChat() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    // The page heading and the source scroll with the conversation, above its
+    // controls, so they are handed to VoiceChat rather than rendered beside it.
+    <VoiceChat key={document?.sessionId ?? "no-document"} sessionId={document?.sessionId}>
+      {children}
       {document ? (
         <DocumentPreview document={document} onClear={handleClear} />
       ) : (
         <SourcePicker disabled={false} onIngested={setDocument} />
       )}
-
-      <VoiceChat key={document?.sessionId ?? "no-document"} sessionId={document?.sessionId} />
-    </div>
+    </VoiceChat>
   );
 }

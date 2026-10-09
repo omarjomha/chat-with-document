@@ -1,7 +1,5 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-
 import type { TranscriptTurn } from "@/lib/realtime/useRealtimeSession";
 
 interface TranscriptFeedProps {
@@ -10,17 +8,10 @@ interface TranscriptFeedProps {
 }
 
 export function TranscriptFeed({ turns, emptyHint }: TranscriptFeedProps) {
-  const endRef = useRef<HTMLDivElement | null>(null);
-
   // Turns are reserved in conversation order the moment an item is announced,
   // which is before its text exists. Hide the empty ones so a placeholder
   // bubble never appears, while their position is still held in the array.
   const visible = turns.filter((turn) => turn.text.trim().length > 0);
-
-  // Keep the newest turn in view as text streams in.
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [turns]);
 
   if (visible.length === 0) {
     return (
@@ -40,8 +31,6 @@ export function TranscriptFeed({ turns, emptyHint }: TranscriptFeedProps) {
       {visible.map((turn) => (
         <TurnBubble key={turn.id} turn={turn} />
       ))}
-      {/* The margin keeps the newest line clear of the pinned session controls. */}
-      <div ref={endRef} className="scroll-mb-48" />
     </div>
   );
 }
