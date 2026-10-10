@@ -16,6 +16,7 @@ const nextConfig: NextConfig = {
    * label, which for an IP address is one octet.
    *
    * - 172.20.10.*  an iPhone Personal Hotspot
+   * - 172.28.*.*   eduroam, and other campus networks on 172.16/12
    * - 192.168.*.*  a typical home or office LAN
    * - 10.*.*.*     the other common private range
    * - tunnels      a trusted certificate for iOS, which is strict about
@@ -25,6 +26,7 @@ const nextConfig: NextConfig = {
    */
   allowedDevOrigins: [
     "172.20.10.*",
+    "172.28.*.*",
     "192.168.*.*",
     "10.*.*.*",
     "**.trycloudflare.com",
