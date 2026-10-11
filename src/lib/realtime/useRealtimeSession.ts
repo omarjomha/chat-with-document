@@ -312,6 +312,16 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
   }, [reveal]);
 
   const pendingReveal = hasPendingReveal(turns, reveal);
+  /*
+   * The reveal is an estimate of the voice, so it may only run while the voice
+   * can be playing. Transcript text arrives at generation speed, far ahead of
+   * the audio, so most of a reply is already here when the network drops --
+   * and the voice stops at once. Revealing on through a drop printed the rest
+   * of a reply nobody heard. Frozen instead, the cursor marks where the voice
+   * stopped: a connection that heals resumes from it, and one that is lost is
+   * sealed at it.
+   */
+  const revealing = pendingReveal && state === "live";
 
   /*
    * Advances the reveal cursors while any assistant text is still outstanding.
@@ -319,7 +329,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
    * carries no recurring work.
    */
   useEffect(() => {
-    if (!pendingReveal) return;
+    if (!revealing) return;
 
     let previous = performance.now();
     const timer = setInterval(() => {
@@ -340,7 +350,7 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     }, REVEAL_TICK_MS);
 
     return () => clearInterval(timer);
-  }, [pendingReveal]);
+  }, [revealing]);
 
   const releaseMicrophone = useCallback(() => {
     micRef.current?.getTracks().forEach((track) => track.stop());
@@ -360,9 +370,11 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     releaseMicrophone();
     setModelSpeaking(false);
     setUserSpeaking(false);
+    // The voice stops with the connection, so the transcript keeps only what was heard.
+    sealUnspokenAssistantTurns();
     // An error stays on screen until the user starts again; it explains itself.
     setState((current) => (current === "idle" || current === "error" ? current : "closed"));
-  }, [cancelPendingRetry, releaseMicrophone]);
+  }, [cancelPendingRetry, releaseMicrophone, sealUnspokenAssistantTurns]);
 
   // Rebuild attempts since the session was last live. Reset only on reaching
   // live, so a network where ICE never completes still runs out of attempts.
@@ -583,9 +595,10 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
      * response.done fires when generation finishes, which is well before the
      * voice stops. Using it alone hid the interrupt control while the model was
      * still audibly talking. The reveal cursor tracks the speech, so it is the
-     * better signal for whether there is anything left to interrupt.
+     * better signal for whether there is anything left to interrupt. A frozen
+     * reveal is not speech: there is no connection to interrupt over.
      */
-    modelSpeaking: modelSpeaking || pendingReveal,
+    modelSpeaking: state === "live" && (modelSpeaking || pendingReveal),
     start,
     stop,
     toggleMute,

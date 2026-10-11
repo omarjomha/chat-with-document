@@ -80,7 +80,8 @@ export function historyReplayEvents(
   }));
 }
 
-export type ConnectionLossReason = "failed" | "disconnected" | "timeout" | "channel-closed";
+export type ConnectionLossReason =
+  "failed" | "disconnected" | "offline" | "timeout" | "channel-closed";
 
 interface WatchdogCallbacks {
   /** The peer reached `connected`, initially or after recovering. */
@@ -128,6 +129,22 @@ export class ConnectionWatchdog {
       default:
         break;
     }
+  }
+
+  /**
+   * The browser reported losing its network, as airplane mode or a dead radio
+   * does at once.
+   *
+   * The peer connection only notices from missed ICE consent checks, which
+   * takes seconds, and the model's voice has already stopped by then. Treated
+   * as a drop with the same grace period, so a connection that rides it out
+   * is kept; the browser's `online` event is reported through `update` with
+   * the peer's current state, which settles it either way.
+   */
+  networkOffline(): void {
+    if (this.finished) return;
+    this.callbacks.onRecovering();
+    this.graceTimer ??= setTimeout(() => this.lose("offline"), this.graceMs);
   }
 
   /** The data channel closed without us closing it. Nothing can be sent now. */

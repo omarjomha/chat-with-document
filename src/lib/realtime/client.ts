@@ -140,9 +140,21 @@ export async function connectRealtime(options: ConnectOptions): Promise<Realtime
     },
   });
 
+  // The browser knows the network is gone well before ICE does.
+  const onOffline = () => {
+    if (!closed) watchdog.networkOffline();
+  };
+  const onOnline = () => {
+    if (!closed) watchdog.update(pc.connectionState);
+  };
+  window.addEventListener("offline", onOffline);
+  window.addEventListener("online", onOnline);
+
   const cleanup = () => {
     if (closed) return;
     closed = true;
+    window.removeEventListener("offline", onOffline);
+    window.removeEventListener("online", onOnline);
     watchdog.stop();
     try {
       pc.close();

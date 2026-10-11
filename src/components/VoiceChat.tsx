@@ -123,32 +123,6 @@ export function VoiceChat({ sessionId, children }: VoiceChatProps) {
             <ConnectionStatus state={session.state} />
           </header>
 
-          {session.error && (
-            <div
-              role="alert"
-              className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
-            >
-              <p className="min-w-0">{session.error}</p>
-              <button
-                type="button"
-                onClick={session.clearError}
-                aria-label="Dismiss error"
-                className="-m-2 flex h-9 w-9 shrink-0 items-center justify-center text-lg leading-none opacity-60"
-              >
-                ×
-              </button>
-            </div>
-          )}
-
-          {session.state === "reconnecting" && (
-            <p
-              role="status"
-              className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
-            >
-              Connection dropped. Reconnecting — the conversation will pick up where it left off.
-            </p>
-          )}
-
           {isLive && session.hasMicrophone && (
             <MicStatus muted={session.muted} speaking={session.userSpeaking} />
           )}
@@ -172,6 +146,38 @@ export function VoiceChat({ sessionId, children }: VoiceChatProps) {
           inSession ? "border-t border-slate-200 dark:border-slate-800" : "",
         ].join(" ")}
       >
+        {/*
+          Connection news lives here, not above the transcript. The transcript
+          region follows the newest line, so anything at its top is scrolled out
+          of view mid-answer -- exactly when a drop happens -- and the
+          reconnecting banner went unseen.
+        */}
+        {session.error && (
+          <div
+            role="alert"
+            className="flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+          >
+            <p className="min-w-0">{session.error}</p>
+            <button
+              type="button"
+              onClick={session.clearError}
+              aria-label="Dismiss error"
+              className="-m-2 flex h-9 w-9 shrink-0 items-center justify-center text-lg leading-none opacity-60"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
+        {session.state === "reconnecting" && (
+          <p
+            role="status"
+            className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+          >
+            Connection dropped. Reconnecting — the conversation will pick up where it left off.
+          </p>
+        )}
+
         {/* Disabled while reconnecting: there is no channel to send on. */}
         {showTextInput && (
           <TextChatInput disabled={session.state !== "live"} onSend={session.sendText} />

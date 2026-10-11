@@ -191,6 +191,43 @@ describe("ConnectionWatchdog", () => {
     expect(onLost).toHaveBeenCalledOnce();
   });
 
+  it("treats the browser going offline as a drop, before ICE notices", () => {
+    const { watchdog, onRecovering, onLost } = watch();
+    watchdog.update("connected");
+
+    watchdog.networkOffline();
+    expect(onRecovering).toHaveBeenCalledOnce();
+    expect(onLost).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(5_000);
+    expect(onLost).toHaveBeenCalledWith("offline");
+  });
+
+  it("keeps a connection that is still up when the network returns", () => {
+    const { watchdog, onLive, onLost } = watch();
+    watchdog.update("connected");
+
+    watchdog.networkOffline();
+    vi.advanceTimersByTime(2_000);
+    watchdog.update("connected");
+    vi.advanceTimersByTime(60_000);
+
+    expect(onLive).toHaveBeenCalledTimes(2);
+    expect(onLost).not.toHaveBeenCalled();
+  });
+
+  it("shares one grace period between going offline and ICE disconnecting", () => {
+    const { watchdog, onLost } = watch();
+    watchdog.update("connected");
+
+    watchdog.networkOffline();
+    vi.advanceTimersByTime(3_000);
+    watchdog.update("disconnected");
+    vi.advanceTimersByTime(2_000);
+
+    expect(onLost).toHaveBeenCalledOnce();
+  });
+
   it("stays silent after being stopped", () => {
     const { watchdog, onLost, onLive } = watch();
 
@@ -331,6 +368,36 @@ describe("connectRealtime", () => {
     opts.onConnectionLost.mockImplementation(() => expect(pc.closed).toBe(true));
     vi.advanceTimersByTime(10_000);
     expect(opts.onConnectionLost).toHaveBeenCalledWith("disconnected");
+  });
+
+  it("reports reconnecting the moment the browser goes offline", async () => {
+    answerHandshake();
+    const opts = options();
+    await connectRealtime(opts);
+    const pc = FakePeerConnection.last;
+    pc.become("connected");
+
+    window.dispatchEvent(new Event("offline"));
+    expect(opts.onStateChange).toHaveBeenLastCalledWith("reconnecting");
+
+    // Back online with the peer still connected: nothing was lost.
+    window.dispatchEvent(new Event("online"));
+    expect(opts.onStateChange).toHaveBeenLastCalledWith("live");
+    vi.advanceTimersByTime(60_000);
+    expect(opts.onConnectionLost).not.toHaveBeenCalled();
+  });
+
+  it("stops listening for network changes once closed", async () => {
+    answerHandshake();
+    const opts = options();
+    const handle = await connectRealtime(opts);
+    FakePeerConnection.last.become("connected");
+    opts.onStateChange.mockClear();
+
+    handle.close();
+    window.dispatchEvent(new Event("offline"));
+
+    expect(opts.onStateChange).not.toHaveBeenCalled();
   });
 
   it("does not report a loss for a connection the caller closed", async () => {
