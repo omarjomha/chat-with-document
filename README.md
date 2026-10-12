@@ -1,9 +1,28 @@
 # Talk to a Document
 
 Upload a PDF or paste a YouTube link, then hold a spoken conversation about it. Built on the
-OpenAI Realtime API, deployed as a single Next.js app on Vercel.
+OpenAI Realtime API over WebRTC, as a single mobile-first Next.js app deployed on Vercel.
+
+- **Live app:** https://chat-with-document-pi.vercel.app
+- **Repository:** https://github.com/omarjomha/chat-with-document
+
+| Capability                                   | Deployed                                                                | Local |
+| -------------------------------------------- | ----------------------------------------------------------------------- | ----- |
+| PDF upload (up to 25 MB) and text extraction | ✅                                                                      | ✅    |
+| YouTube transcript ingestion                 | ❌ (see [below](#the-deployed-path-attempted-and-it-fails-differently)) | ✅    |
+| Collapsible preview of the extracted text    | ✅                                                                      | ✅    |
+| Live voice conversation with barge-in        | ✅                                                                      | ✅    |
+| Live transcript of the conversation          | ✅                                                                      | ✅    |
+| Text chat fallback when there is no mic      | ✅                                                                      | ✅    |
+| Automatic recovery from a dropped connection | ✅                                                                      | ✅    |
+
+YouTube blocks anonymous caption requests from datacentre IPs, which the spec anticipates. The
+YouTube path is demonstrated locally, and the reasons, the failure modes and the ready-made proxy
+hook are documented in [YouTube transcripts](#youtube-transcripts-how-and-what-it-cost-to-find).
 
 ## Getting started
+
+Requires Node.js 20.9 or later, the minimum for Next.js 16.
 
 ```bash
 cp .env.example .env.local   # then add your OpenAI key
@@ -12,90 +31,7 @@ npm run dev
 ```
 
 Open http://localhost:3000. Voice needs microphone permission, which browsers only grant over
-HTTPS or on `localhost`.
-
-### Testing on a phone
-
-The spec targets ~390px and reviewers test on a phone, so this is worth setting up properly. Two
-things make it fiddly, and they have one shared answer.
-
-**Microphone access needs a secure context.** Browsers grant `getUserMedia` only over HTTPS or on
-`localhost`, so `http://<laptop-ip>:3000` gives a page where the mic silently refuses and only the
-text fallback works. Hence:
-
-```bash
-npm run dev:https -- -H <laptop-ip>    # e.g. -H 172.20.10.2
-```
-
-`-H` matters and is easy to miss: Next's generated certificate covers only `localhost`, `127.0.0.1`
-and `::1`. Without the flag, a phone opening `https://<laptop-ip>:3000` gets a certificate whose
-name does not match the address, and iOS Safari treats a name mismatch far more harshly than an
-untrusted issuer -- frequently refusing to offer a bypass at all. Passing `-H` adds that address to
-the certificate, and Next regenerates automatically when the existing one does not cover it.
-
-**YouTube ingestion needs an unblocked egress** (see the YouTube section). Both are satisfied by one
-arrangement:
-
-1. Turn on the phone's hotspot and connect the **laptop** to it.
-2. Leave the phone on its own hotspot network. The hotspot host is the gateway for that network, so
-   it can reach its own clients.
-3. Find the laptop's address **on the hotspot network** — `ipconfig` on Windows, or
-   `ipconfig getifaddr en0` on macOS. An iPhone hotspot hands out `172.20.10.x`, so that is the
-   number to look for; ignore `169.254.*` and any VirtualBox or Hyper-V adapter. Next's own startup
-   banner is not a reliable source here -- it has been observed printing a virtual adapter's
-   address instead.
-4. Start the server with that address: `npm run dev:https -- -H <laptop-ip>`.
-5. On the phone, open `https://<that-address>:3000` -- scheme and port both required, or Safari will
-   search instead of connecting -- and accept the certificate warning.
-
-The `allowedDevOrigins` entries in `next.config.ts` are what make step 5 work, and the failure
-without them is thoroughly misleading: the page renders correctly and looks completely normal, but
-nothing is clickable. The dev server serves the HTML and the JS bundles to any caller, then refuses
-the dev-only endpoints the React client calls during hydration, because those carry an `Origin`
-header naming an address the server was not started with. Nothing in the page hints at it -- the
-only clue is a cross-origin message in the browser console.
-
-The laptop's traffic then exits over cellular, which YouTube has not flagged, while the phone
-reaches the laptop over the hotspot LAN. Allow the inbound connection if the firewall prompts.
-
-**If the mic is still refused after accepting the warning** — iOS Safari is strict about
-self-signed certificates — either trust the generated CA on the phone (it is written to the
-`certificates/` directory, and on iOS is installed under Settings → General → VPN & Device
-Management, then enabled under Settings → General → About → Certificate Trust Settings), or put a
-tunnel in front of the dev server for a genuinely trusted certificate. A tunnel only affects
-inbound traffic, so YouTube ingestion keeps working over cellular either way.
-
-**Last confirmed working: 2026-10-08** — an iPhone on its own hotspot, against `npm run dev:https`
-on the tethered laptop: YouTube link ingested, transcript extracted, spoken conversation held about
-it. That is the whole flow on one connection, which is what the spec asks for.
-
-Voice failed on the first attempt there, and the cause is worth recording because it presents as a
-realtime problem and is not one: there was no `.env.local`, so `getServerEnv()` threw and
-`POST /api/realtime/token` returned `500` with `Realtime session could not be started. Check server
-configuration.` The browser never reached the WebRTC handshake. Ingestion kept working throughout,
-because `getYouTubeProxyUrl()` reads its one variable separately and needs no OpenAI key.
-
-Two `curl` probes separate a configuration fault from a network one, and are worth running before
-touching any client code:
-
-```bash
-# 1. Does our own route mint a secret? 200 = key present and accepted.
-curl -sk -X POST https://localhost:3000/api/realtime/token \
-  -H 'Content-Type: application/json' -d '{}'
-
-# 2. Does OpenAI accept that secret? Deliberately invalid SDP body.
-TOKEN=$(curl -sk -X POST https://localhost:3000/api/realtime/token \
-  -H 'Content-Type: application/json' -d '{}' | sed -E 's/.*"value":"([^"]*)".*/\1/')
-curl -s -X POST https://api.openai.com/v1/realtime/calls \
-  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/sdp' -d 'not-a-real-sdp'
-```
-
-Read the second one by status code, not by the fact that it errors. `400 invalid_offer` is the
-**pass**: the credential authenticated and only the garbage SDP was rejected, which also proves
-egress to `api.openai.com` works from the current connection. `401` means the token itself was
-refused. If both probes pass and voice still fails on the phone, the remaining suspect is ICE rather
-than auth — `src/lib/realtime/client.ts` configures a single STUN server, and a carrier NAT that
-eats STUN leaves the connection stuck in `connecting` before it reports "Connection lost."
+HTTPS or on `localhost`. To use it from a phone, see [Testing on a phone](#testing-on-a-phone).
 
 ### Environment
 
@@ -105,6 +41,7 @@ eats STUN leaves the connection stuck in `connecting` before it reports "Connect
 | `OPENAI_REALTIME_MODEL` | no       | Defaults to `gpt-realtime-2.1`.                                                                                                                      |
 | `OPENAI_REALTIME_VOICE` | no       | Defaults to `marin`.                                                                                                                                 |
 | `BLOB_READ_WRITE_TOKEN` | no       | Injected by Vercel. Without it the session store falls back to memory, which is fine locally and wrong in production — see `src/lib/store/types.ts`. |
+| `CRON_SECRET`           | no       | Production only. Authenticates the daily cleanup cron; without it the cron route refuses to run.                                                     |
 | `YOUTUBE_PROXY_URL`     | no       | Egress prefix for YouTube requests, for deployments whose IPs YouTube throttles. The target URL is appended percent-encoded.                         |
 
 No YouTube or Google API key is needed. See below for why.
@@ -112,14 +49,35 @@ No YouTube or Google API key is needed. See below for why.
 ### Checks
 
 ```bash
-npm run test             # Vitest, never touches the network
+npm run test             # Vitest, ~270 tests, never touches the network
 npm run typecheck        # tsc --noEmit
 npm run lint
 npm run build
 npm run verify:youtube   # live check against the real YouTube API (see below)
 ```
 
-## How it works
+## Technical overview
+
+### Stack, and why
+
+- **Next.js 16 (App Router) + React 19 + TypeScript.** One project serves the UI and the API
+  routes, so there is one deploy, one set of environment variables, and types shared across the
+  boundary — the realtime event types are used by both the token route and the browser client.
+- **Vercel.** Serverless Node functions for the API, Vercel Blob for storage, and a daily cron for
+  cleanup, all without separate infrastructure. Configuration lives in `vercel.ts`.
+- **OpenAI Realtime API over WebRTC.** WebRTC carries audio peer-to-peer between the browser and
+  OpenAI, with echo cancellation and jitter buffering handled by the browser. The server never
+  relays audio, which keeps functions short-lived and cheap.
+- **`unpdf`** for server-side PDF extraction: a serverless-friendly build of pdf.js with no native
+  dependencies.
+- **No YouTube library.** Captions are read with about 100 lines of `fetch`, after the library
+  route proved dead — see the YouTube section.
+- **`zod`** validates the server environment and every request body. **Tailwind CSS 4** for
+  styling. **Vitest + Testing Library** for tests.
+
+The runtime dependency list is seven packages.
+
+### Architecture
 
 ```
 browser ──upload──▶ Vercel Blob ──▶ /api/ingest/pdf ──┐
@@ -131,16 +89,112 @@ browser ◀── ephemeral client secret ── /api/realtime/token ◀── i
    └── WebRTC (audio + `oai-events` data channel) ──▶ OpenAI Realtime API
 ```
 
-The browser never holds an API key and never sends the document to OpenAI. The server mints a
-short-lived client secret and injects the document as session instructions at mint time, so context
-is applied before the browser connects.
+```
+src/
+  app/            page and API routes (ingest, realtime token, sessions, cron)
+  components/     UI: source picker, uploader, preview, voice chat, controls, transcript
+  lib/
+    ingest/       PDF and YouTube extraction, normalisation, session creation, transcript cache
+    realtime/     WebRTC client, typed event protocol, session hook, reconnect, transcript pacing
+    store/        SessionStore interface with memory and Blob implementations
+    security/     origin check and rate limiter
+    prompt.ts     builds the session instructions from the document
+    env.ts        zod-validated server environment
+tests/            unit and integration tests, plus one opt-in live test
+```
 
-PDFs are uploaded straight to Blob storage with a server-signed token because Vercel caps function
-request bodies at 4.5 MB and the spec requires 25 MB; the server then fetches and parses the blob,
-so extraction stays server-side.
+**Both sources converge on one function.** `createSession` normalises, truncates, stores and
+returns the text. Nothing downstream of it knows or cares whether the text came from a PDF or a
+video.
 
-Both sources converge on `createSession`, which normalises, truncates, stores and returns the text.
-Nothing downstream of that knows or cares which source it came from.
+**Context is injected server-side at mint time.** When the user starts a voice chat, the browser
+sends only a session id. The server loads the document, builds the instructions, and mints a
+short-lived client secret with those instructions already applied. The browser never holds an API
+key and never sends the document to OpenAI, so the session is grounded before it connects.
+
+**PDFs go straight to Blob storage.** Vercel caps function request bodies at 4.5 MB and the spec
+requires 25 MB, so the browser uploads directly to Blob with a server-signed token, which also
+drives a real progress bar. The server then fetches and parses the file, so extraction stays
+server-side, and deletes it on every outcome.
+
+**A session store, not module memory.** Vercel functions do not share memory between invocations,
+so the in-memory storage the spec allows would silently lose documents in production. A small
+`SessionStore` interface uses memory locally and Vercel Blob in production, selected by whether
+Blob credentials exist. Sessions expire after two hours, enforced on read. They are swept on
+ingest and by a daily cron that also removes abandoned uploads.
+
+### Realtime voice
+
+- **Barge-in.** Server-side voice activity detection cancels the model's reply the moment the user
+  starts talking. The interrupted reply is sealed in the transcript, so late deltas cannot regrow
+  it or snap it back to the full, unspoken text. A "Stop talking" button does the same for anyone who
+  would rather tap.
+- **Transcript order follows the conversation, not arrival.** The user's speech is transcribed
+  asynchronously, and the transcript often resolves after the answer has started. Each turn
+  reserves its slot when the server announces it, anchored on `previous_item_id`, so questions
+  always sit above their answers (`src/lib/realtime/turnOrder.ts`).
+- **Text keeps pace with the voice.** Transcript text arrives at generation speed, much faster than
+  speech, so it is revealed at a steady speaking rate. Queued replies are revealed one at a time
+  (`src/lib/realtime/reveal.ts`).
+- **Recovery from poor networks.** A disconnected peer gets five seconds to heal on its own. Past
+  that, the client rebuilds the session with a fresh token and a fresh peer connection, and replays
+  the recent conversation, so the model still knows what was said. It makes four attempts over
+  about fifteen seconds and waits for the browser's `online` event when the device is offline. The
+  status pill shows Reconnecting throughout (`src/lib/realtime/reconnect.ts`).
+- **Text fallback.** If the microphone is denied, missing, or blocked by an insecure origin, the
+  user gets a specific message and can switch to text chat on the same session and the same
+  document.
+
+### Ingestion edge cases
+
+PDFs: encrypted, corrupt, empty, and image-only (scanned) files each get a specific error. A
+document that extracts mostly unmappable glyphs is flagged as unreadable instead of being passed to
+the model as noise. When some pages have no text layer, the user is told how many. Text past the
+context budget (360k characters, about 90k tokens of the model's 128k window) is truncated with a
+visible notice, since the spec waives chunking.
+
+YouTube: every common link shape is accepted, including `youtu.be`, Shorts, live, embed and
+privacy-enhanced embed links, any `youtube.com` subdomain, and links pasted without a scheme or
+with a timestamp. Invalid links are rejected in the browser before any
+request is sent. Server-side failures map to distinct codes and statuses, listed under
+[Error cases](#error-cases).
+
+### Security
+
+- The OpenAI key exists only on the server. The browser gets an ephemeral client secret, scoped to
+  one Realtime session.
+- The token and ingest routes reject cross-origin browser requests and are rate-limited per client
+  (ten per ten minutes), since each mint opens a billed session.
+- The PDF routes only act on paths inside the upload folder, so a crafted request cannot point
+  extraction, and the deletion that follows it, at a stored session or cached transcript.
+- The cron route refuses to run without `CRON_SECRET`.
+- Uploaded files and sessions are short-lived and deleted by the app, since Blob has no TTL of its
+  own.
+
+### Testing
+
+Unit and integration tests cover the pure logic directly: event parsing, transcript ordering and
+pacing, reconnect timing, normalisation, prompt building, and the rate limiter. They also exercise
+the API routes and key UI behaviour, including barge-in, a network drop mid-answer, and the YouTube
+input. PDF tests generate real PDFs in memory. YouTube tests run against recorded responses,
+including the HTML block page that once parsed into a fake transcript. One opt-in live test checks
+the real YouTube endpoint.
+
+## Trade-offs
+
+- **The whole document goes into the instructions.** There is no retrieval layer, which the spec
+  waives. This is simple and gives the model full context. The cost is bounded by prompt caching:
+  the document is a static prefix, so after the first turn it is billed at the cached rate. The
+  limit is the context window, handled by truncating with a visible notice.
+- **Rate limiting is per function instance.** It stops one script in a loop at no infrastructure
+  cost. A distributed attacker would need shared state or the Vercel firewall to stop.
+- **Blob as a key-value store.** It is already part of the platform and needs no provisioning. A
+  real database would be the next step for anything beyond short-lived sessions.
+- **The transcript pacing is an estimate.** The API exposes no word timings, so the reveal runs at
+  a fixed speaking rate, tuned slightly fast. Text a little ahead of the voice reads like captions,
+  while text lagging behind it reads as broken.
+- **Deployed YouTube needs a proxy.** The code path is wired through `YOUTUBE_PROXY_URL`, but no
+  proxy is configured, so YouTube is demonstrated locally.
 
 ## YouTube transcripts: how, and what it cost to find
 
@@ -311,3 +365,83 @@ Each gets its own HTTP status and message rather than a generic failure:
 | `no-captions` | 422    | Video has no caption tracks                                                 |
 | `empty`       | 422    | Captions fetched but contained nothing                                      |
 | `blocked`     | 502    | Rate-limited, refused, or newly token-gated — our problem, not the caller's |
+
+## Testing on a phone
+
+Two constraints shape local testing on a phone. **The microphone needs a secure context**:
+browsers only expose `getUserMedia` over HTTPS or on `localhost`, so `http://<laptop-ip>:3000`
+loads, but only text chat works. **YouTube ingestion needs an unblocked network**, as described
+above. Pick one of these two setups.
+
+### Option A: Cloudflare tunnel (simplest)
+
+```bash
+npm run dev:tunnel                 # builds, starts the server, prints a trycloudflare.com URL
+npm run dev:tunnel -- --skip-build # reuse the previous build
+```
+
+Requires [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/).
+The tunnel dials out from the laptop, so the phone can be on any network, cellular included, and
+Cloudflare's certificate is one iOS already trusts. A tunnel only affects inbound traffic, so
+YouTube requests still leave from the laptop's own connection.
+
+### Option B: phone hotspot and dev HTTPS
+
+1. Turn on the phone's hotspot and connect the **laptop** to it. The laptop's traffic then leaves
+   over cellular, which YouTube has not flagged.
+2. Find the laptop's address on the hotspot: `ipconfig` on Windows, `ipconfig getifaddr en0` on
+   macOS. An iPhone hotspot uses `172.20.10.x`. Ignore `169.254.*` and virtual adapters. Next's
+   startup banner has been seen printing the wrong adapter.
+3. Run `npm run dev:https -- -H <laptop-ip>`. The `-H` matters: Next's generated certificate
+   otherwise covers only `localhost`, and iOS Safari often refuses a name mismatch outright.
+4. On the phone, open `https://<laptop-ip>:3000` (scheme and port both required) and accept the
+   certificate warning. If the mic is still refused, trust the generated CA from `certificates/`
+   under Settings → General → VPN & Device Management, then enable it under Settings → General →
+   About → Certificate Trust Settings.
+
+The `allowedDevOrigins` entries in `next.config.ts` make step 4 work. Without them the page renders
+normally but nothing is clickable: the dev server refuses the dev-only endpoints the React client
+needs during hydration, and the only clue is a cross-origin message in the console.
+
+**Last confirmed working: 2026-10-08.** On an iPhone on its own hotspot, against the tethered laptop,
+a YouTube link was ingested and a spoken conversation held about it.
+
+## Troubleshooting voice
+
+If voice fails, two `curl` probes separate a configuration fault from a network one:
+
+```bash
+# 1. Does our own route mint a secret? 200 = key present and accepted.
+curl -sk -X POST https://localhost:3000/api/realtime/token \
+  -H 'Content-Type: application/json' -d '{}'
+
+# 2. Does OpenAI accept that secret? Deliberately invalid SDP body.
+TOKEN=$(curl -sk -X POST https://localhost:3000/api/realtime/token \
+  -H 'Content-Type: application/json' -d '{}' | sed -E 's/.*"value":"([^"]*)".*/\1/')
+curl -s -X POST https://api.openai.com/v1/realtime/calls \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/sdp' -d 'not-a-real-sdp'
+```
+
+A `500` from the first probe almost always means `.env.local` is missing. For the second, a
+`400 invalid_offer` is the **pass**: the credential was accepted and only the garbage SDP was
+rejected, which also proves the connection can reach `api.openai.com`. A `401` means the token was
+refused. If both pass and voice still fails, suspect ICE: a network that blocks STUN leaves the
+connection in Connecting until the 15-second timeout reports it.
+
+## AI usage
+
+I used Claude Code (Anthropic's agentic coding tool) to write all of the code in this repository,
+and I reviewed the code before deployment.
+
+How the work was structured:
+
+- **A plan first.** The spec was turned into a staged plan (`docs/PLAN.md`), ordered by risk. Voice
+  shipped first against a hardcoded context, since it was the hardest part and the one that had to
+  be proven on a real phone. Ingestion was layered on after.
+- **Small, focused commits.** The history is kept as single-purpose commits with descriptive
+  messages, so each change is easy to follow on its own.
+- **Verified on real devices.** Each stage was tested on a phone against the running app, and what
+  that turned up drove the fixes in the history.
+- **Measured, not assumed.** The current Realtime API was checked against live OpenAI
+  documentation, and the YouTube investigation recorded above tested each approach instead of
+  trusting it.
