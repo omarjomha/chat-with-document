@@ -71,6 +71,12 @@ function truncateOnBoundary(text: string, limit: number): string {
   return slice.trimEnd();
 }
 
+/**
+ * The single text pipeline both sources go through (via createSession):
+ * clean, measure, then truncate to the context budget if needed.
+ * `originalChars` is measured after cleaning, so the truncation banner reports
+ * real content rather than whitespace.
+ */
 export function normalizeExtractedText(
   raw: string,
   limit: number = MAX_CONTEXT_CHARS,

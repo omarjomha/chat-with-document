@@ -1,7 +1,7 @@
 /**
  * YouTube URL parsing.
  *
- * Deliberately free of `server-only` and of any youtubei.js import so the
+ * Deliberately free of `server-only` and of any server-side import so the
  * browser can reject a bad link instantly, the same way the PDF picker checks
  * size and type before starting an upload.
  */
@@ -68,7 +68,7 @@ export function parseYouTubeVideoId(input: string): string | null {
   return null;
 }
 
-/** Canonical watch URL, used as the stored title's link and for logging. */
+/** Canonical watch URL for a video id. Not currently called by the app, only by tests. */
 export function watchUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
 }

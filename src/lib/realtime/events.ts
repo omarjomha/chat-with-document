@@ -109,6 +109,13 @@ export type RealtimeClientEvent =
   | { type: "response.create" }
   | { type: "response.cancel" };
 
+/**
+ * A typed user message, as the pair of events it takes to get a reply.
+ *
+ * Server VAD only triggers responses for committed audio, so creating a text
+ * item merely adds it to the conversation; `response.create` is what asks the
+ * model to answer it.
+ */
 export function textMessageEvent(text: string): RealtimeClientEvent[] {
   return [
     {

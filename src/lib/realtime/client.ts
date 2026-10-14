@@ -120,6 +120,16 @@ async function fetchEphemeralToken(
   return { value: token.value, model: typeof token.model === "string" ? token.model : "" };
 }
 
+/**
+ * Negotiates one WebRTC session with the Realtime API.
+ *
+ * Sequence: build the peer connection and attach the mic (or a receive-only
+ * transceiver), open the `oai-events` data channel, create the SDP offer, mint
+ * an ephemeral token through our own route, POST the offer to OpenAI with that
+ * token, and apply the SDP answer. From then on, audio flows over the media
+ * tracks and JSON events over the data channel; the watchdog decides when the
+ * connection is lost for good.
+ */
 export async function connectRealtime(options: ConnectOptions): Promise<RealtimeSessionHandle> {
   const { audioElement, microphone, onEvent, onStateChange, onError, onConnectionLost } = options;
 
@@ -190,6 +200,8 @@ export async function connectRealtime(options: ConnectOptions): Promise<Realtime
   }
 
   const channel = pc.createDataChannel("oai-events");
+  // Events sent before the channel opens (notably the history replay after a
+  // rebuild) are held here and flushed in order on open.
   const queued: RealtimeClientEvent[] = [];
 
   channel.onopen = () => {

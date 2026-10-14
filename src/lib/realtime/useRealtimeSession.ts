@@ -59,6 +59,28 @@ const ACTIVE_STATES: ReadonlySet<ConnectionState> = new Set<ConnectionState>([
   "reconnecting",
 ]);
 
+/**
+ * Owns one voice conversation: connection lifecycle, microphone, and the
+ * transcript the UI renders.
+ *
+ * Data flow, in the order a reply travels through this hook:
+ *
+ * 1. `handleEvent` receives data-channel events and writes them into `turns`,
+ *    the full, unpaced transcript. `reserveTurn` fixes each turn's position;
+ *    `upsertTurn` fills in its text.
+ * 2. A timer advances a per-turn `reveal` cursor at speaking pace, only while
+ *    the session is live; a drop freezes it where the voice stopped.
+ * 3. `pacedTurns` slices each assistant turn to its cursor. That, not `turns`,
+ *    is what the hook returns, so the UI only ever sees text the voice has said.
+ *
+ * Lifecycle: `start` acquires the microphone and calls `openConnection`. A
+ * dropped connection reaches `handleConnectionLost`, which rebuilds through the
+ * same `openConnection` with backoff. `stop` tears everything down.
+ *
+ * Async work is fenced by `generationRef`: every callback captures the
+ * generation it was started under and goes inert once start or stop bumps it,
+ * so a stale connection or retry can never write into a newer session.
+ */
 export function useRealtimeSession(options: UseRealtimeSessionOptions): RealtimeSession {
   const { sessionId, tokenEndpoint = "/api/realtime/token", audioRef } = options;
 
@@ -200,6 +222,11 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
     });
   }, []);
 
+  /**
+   * Reduces server events into transcript and speaking state. Unhandled event
+   * types are expected (the protocol is much wider than what the UI shows) and
+   * only logged in development.
+   */
   const handleEvent = useCallback(
     (event: RealtimeServerEvent) => {
       switch (event.type) {
@@ -379,7 +406,9 @@ export function useRealtimeSession(options: UseRealtimeSessionOptions): Realtime
   // Rebuild attempts since the session was last live. Reset only on reaching
   // live, so a network where ICE never completes still runs out of attempts.
   const attemptRef = useRef(0);
-  // Indirection so a connection can report its loss to the newest handler.
+  // Breaks a dependency cycle: openConnection must call handleConnectionLost,
+  // which itself calls openConnection to rebuild. The ref is assigned after
+  // both exist and always points at the latest handler.
   const lostRef = useRef<() => void>(() => {});
 
   /** Opens one connection for the current session. Shared by start and every rebuild. */
